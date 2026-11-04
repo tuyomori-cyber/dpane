@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dir-group WebUI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <strong>dir-group</strong><span class="mvp">WebUI MVP</span>
+    <nav aria-label="ペイン操作">
+      <button id="split-horizontal" title="Ctrl+Shift+L">左右に追加</button>
+      <button id="split-vertical" title="Ctrl+Shift+J">上下に追加</button>
+      <button id="close-pane" title="Ctrl+Shift+W">ペインを閉じる</button>
+    </nav>
+  </header>
+  <main id="workspace" aria-label="ファイルペイン"></main>
+  <script src="app.js"></script>
+</body>
+</html>
