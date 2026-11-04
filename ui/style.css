@@ -36,3 +36,8 @@ button:disabled:hover { background: #303746; border-color: #4b566a; }
 .file-menu[hidden] { display: none; }
 .file-menu button { text-align: left; border-color: transparent; background: transparent; }
 .file-menu button:hover, .file-menu button:focus { background: #3b6aa2; }
+.path-completions { position: fixed; z-index: 12; max-height: 220px; overflow-y: auto; background: #252a34; border: 1px solid #596579; border-radius: 4px; box-shadow: 0 4px 12px #0009; }
+.path-completions[hidden] { display: none; }
+.completion-option { display: block; width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.completion-option.selected, .completion-option:hover { background: #3b6aa2; }
+.completion-note { padding: 4px 9px; color: #aebbd0; font-size: .78rem; }

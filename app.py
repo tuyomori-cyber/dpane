@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import gi
@@ -17,6 +18,7 @@ gi.require_version("WebKit2", "4.1")
 from gi.repository import Gio, GLib, Gtk, WebKit2  # noqa: E402
 
 import file_operations  # noqa: E402
+import path_completion  # noqa: E402
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -121,6 +123,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         self.set_default_size(1200, 760)
         self.file_clipboard = None
         self.file_operation_busy = False
+        self.completion_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="path-completion")
         self.connect("delete-event", self.on_window_delete)
 
         manager = WebKit2.UserContentManager()
@@ -134,6 +137,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         manager.connect("script-message-received::closeWindow", self.on_close_request)
         manager.register_script_message_handler("fileOperation")
         manager.connect("script-message-received::fileOperation", self.on_file_operation_request)
+        manager.register_script_message_handler("pathCompletion")
+        manager.connect("script-message-received::pathCompletion", self.on_path_completion_request)
 
         self.web_view = WebKit2.WebView.new_with_user_content_manager(manager)
         settings = self.web_view.get_settings()
@@ -162,6 +167,22 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             response = {"error": f"要求を解釈できません: {error}"}
 
         self.send_to_ui("receiveDirectory", response)
+
+    def on_path_completion_request(self, _manager, result) -> None:
+        try:
+            request = json.loads(result.get_js_value().to_json(0))
+            pane_id = request.get("paneId")
+            request_id = request.get("requestId")
+            value = request.get("path")
+            if not isinstance(pane_id, str) or not isinstance(request_id, int):
+                return
+            future = self.completion_executor.submit(path_completion.complete_path, value)
+            def finish(completed):
+                response = {"paneId": pane_id, "requestId": request_id, **completed.result()}
+                GLib.idle_add(self.send_to_ui, "receivePathCompletion", response)
+            future.add_done_callback(finish)
+        except (TypeError, ValueError, AttributeError, RuntimeError):
+            return
 
     def on_file_open_request(self, _manager, result) -> None:
         try:

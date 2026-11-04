@@ -18,6 +18,144 @@
     window.webkit.messageHandlers.directoryListing.postMessage({ paneId: pane.id, path });
   }
 
+  function hideCompletion(pane, invalidate = true) {
+    const state = pane.completion;
+    if (!state) return;
+    clearTimeout(state.timer);
+    state.list.hidden = true;
+    state.selected = -1;
+    if (invalidate) {
+      state.id++;
+      state.result = null;
+      state.wantTab = false;
+      state.active = false;
+    }
+  }
+
+  function requestCompletion(pane, wantTab = false, delay = 150) {
+    const state = pane.completion;
+    clearTimeout(state.timer);
+    state.id++;
+    state.value = pane.input.value;
+    state.cursor = pane.input.selectionStart;
+    state.selected = -1;
+    state.result = null;
+    state.wantTab = wantTab;
+    state.active = true;
+    state.list.hidden = true;
+    const id = state.id;
+    const prefix = state.value.slice(0, state.cursor);
+    if (pane.input.selectionEnd !== state.cursor || !(prefix.startsWith("/") || prefix.startsWith("~/"))) { state.active = false; return; }
+    const send = () => {
+      state.timer = null;
+      if (document.activeElement !== pane.input || id !== state.id) return;
+      window.webkit.messageHandlers.pathCompletion.postMessage({ paneId: pane.id, requestId: id, path: prefix });
+    };
+    if (delay === 0) send();
+    else state.timer = setTimeout(send, delay);
+  }
+
+  function positionCompletion(pane) {
+    const rect = pane.input.getBoundingClientRect();
+    const list = pane.completion.list;
+    list.style.left = `${rect.left}px`;
+    list.style.top = `${rect.bottom}px`;
+    list.style.width = `${rect.width}px`;
+  }
+
+  function renderCompletion(pane) {
+    const state = pane.completion;
+    const result = state.result;
+    state.list.replaceChildren();
+    if (!result || !result.candidates.length) { state.list.hidden = true; return; }
+    result.candidates.forEach((name, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.tabIndex = -1;
+      button.className = "completion-option";
+      button.textContent = `${name}/`;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(index === state.selected));
+      button.classList.toggle("selected", index === state.selected);
+      button.addEventListener("pointerdown", event => event.preventDefault());
+      button.addEventListener("click", () => applyCompletion(pane, name, true));
+      state.list.append(button);
+    });
+    if (result.count > result.candidates.length) {
+      const note = document.createElement("div");
+      note.className = "completion-note";
+      note.textContent = `${result.count} 件中 ${result.candidates.length} 件を表示`;
+      state.list.append(note);
+    }
+    positionCompletion(pane);
+    state.list.hidden = false;
+    if (state.selected >= 0) state.list.children[state.selected].scrollIntoView({ block: "nearest" });
+  }
+
+  function applyCompletion(pane, name, complete) {
+    const state = pane.completion;
+    if (!name || document.activeElement !== pane.input || pane.input.value !== state.value || pane.input.selectionStart !== state.cursor) return;
+    const left = state.value.slice(0, state.cursor);
+    const parent = left.slice(0, left.lastIndexOf("/") + 1);
+    const afterCursor = state.value.slice(state.cursor);
+    const slash = afterCursor.indexOf("/");
+    const rest = slash < 0 ? "" : afterCursor.slice(slash);
+    const suffix = complete ? (rest || "/") : rest;
+    pane.input.value = parent + name + suffix;
+    const cursor = parent.length + name.length + (complete ? 1 : 0);
+    pane.input.setSelectionRange(cursor, cursor);
+    if (complete) {
+      hideCompletion(pane);
+      requestCompletion(pane);
+    } else {
+      state.value = pane.input.value;
+      state.cursor = cursor;
+      state.selected = -1;
+      renderCompletion(pane);
+    }
+  }
+
+  function setupCompletion(pane) {
+    const list = document.createElement("div");
+    list.className = "path-completions";
+    list.hidden = true;
+    list.setAttribute("role", "listbox");
+    document.body.append(list);
+    pane.completion = { list, id: 0, selected: -1, result: null, timer: null, wantTab: false, active: false };
+    pane.input.addEventListener("input", () => requestCompletion(pane));
+    pane.input.addEventListener("click", () => requestCompletion(pane));
+    pane.input.addEventListener("blur", () => hideCompletion(pane));
+    pane.input.addEventListener("keyup", event => {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) requestCompletion(pane);
+    });
+    pane.input.addEventListener("keydown", event => {
+      const state = pane.completion;
+      if (event.isComposing) return;
+      if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        if (pane.input.value === "~") {
+          pane.input.value = "~/";
+          requestCompletion(pane);
+        } else if (state.result && state.value === pane.input.value && state.cursor === pane.input.selectionStart) {
+          applyCompletion(pane, state.result.common, state.result.count === 1);
+        } else requestCompletion(pane, true, 0);
+      } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && !state.list.hidden && state.result) {
+        event.preventDefault();
+        const count = state.result.candidates.length;
+        state.selected = state.selected < 0 ? (event.key === "ArrowDown" ? 0 : count - 1)
+          : (state.selected + (event.key === "ArrowDown" ? 1 : -1) + count) % count;
+        renderCompletion(pane);
+      } else if (event.key === "Enter" && state.selected >= 0 && !state.list.hidden) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        applyCompletion(pane, state.result.candidates[state.selected], true);
+      } else if (event.key === "Escape" && state.active) {
+        event.preventDefault();
+        hideCompletion(pane);
+      }
+    });
+  }
+
   function requestOpen(pane, path, choose = false) {
     pane.status.textContent = "ファイルを開いています…";
     pane.status.className = "status";
@@ -198,6 +336,8 @@
     const next = firstPane(siblingOf(layout, closing));
     layout = removePane(layout, closing);
     panes.delete(closing.id);
+    hideCompletion(closing);
+    closing.completion.list.remove();
     renderLayout();
     focusPane(next);
   }
@@ -295,8 +435,9 @@
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
         <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
-        <button class="go">移動</button></div><p class="status">準備中…</p><div class="entry-list"></div>`;
+        </div><p class="status">準備中…</p><div class="entry-list"></div>`;
     pane.input = element.querySelector(".path");
+    setupCompletion(pane);
     pane.status = element.querySelector(".status");
     pane.list = element.querySelector(".entry-list");
     pane.list.addEventListener("contextmenu", event => {
@@ -305,9 +446,8 @@
       showFileMenu(event, pane, index);
     });
     element.tabIndex = 0;
-    const go = () => requestDirectory(pane, pane.input.value.trim());
-    element.querySelector(".go").addEventListener("click", go);
-    pane.input.addEventListener("keydown", event => { if (event.key === "Enter") go(); });
+    const go = () => { hideCompletion(pane); pane.submittingPath = pane.input.value; requestDirectory(pane, pane.input.value.trim()); };
+    pane.input.addEventListener("keydown", event => { if (event.key === "Enter" && !event.isComposing) go(); });
     element.querySelector(".up").addEventListener("click", () => {
       const path = pane.path || pane.input.value;
       requestDirectory(pane, `${path.replace(/\/$/, "")}/..`);
@@ -326,10 +466,13 @@
     receiveDirectory(response) {
       const pane = panes.get(response.paneId);
       if (!pane) return;
+      const preserveInput = document.activeElement === pane.input &&
+        (pane.submittingPath === undefined || pane.input.value !== pane.submittingPath);
+      pane.submittingPath = undefined;
       if (response.error) {
         pane.status.textContent = response.error;
         pane.status.className = "status error";
-        if (pane === activePane) focusPane(pane);
+        if (pane === activePane && !preserveInput) focusPane(pane);
         return;
       }
       pane.path = response.path;
@@ -343,7 +486,7 @@
         pane.pendingSelection = null;
       }
       pane.selectInitial = true;
-      pane.input.value = displayPath(response.path);
+      if (!preserveInput) pane.input.value = displayPath(response.path);
       pane.status.textContent = `${response.entries.length} 件${response.truncated ? "（先頭 1,000 件）" : ""} · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3`;
       pane.status.className = "status";
       if (pane.operationNotice) {
@@ -361,7 +504,20 @@
         return button;
       }));
       if (pane.selectedIndex >= 0) selectEntry(pane, pane.selectedIndex, false);
-      if (pane === activePane) focusPane(pane);
+      if (pane === activePane && !preserveInput) focusPane(pane);
+    },
+    receivePathCompletion(response) {
+      const pane = panes.get(response.paneId);
+      if (!pane) return;
+      const state = pane.completion;
+      if (response.requestId !== state.id || document.activeElement !== pane.input ||
+          pane.input.value !== state.value || pane.input.selectionStart !== state.cursor || pane.input.selectionEnd !== state.cursor) return;
+      state.result = response;
+      if (state.wantTab) {
+        state.wantTab = false;
+        if (response.common) applyCompletion(pane, response.common, response.count === 1);
+      }
+      if (state.result === response) renderCompletion(pane);
     },
     receiveOpenResult(response) {
       const pane = panes.get(response.paneId);
@@ -386,7 +542,7 @@
       if (!pane) return;
       pane.status.textContent = response.error || response.message;
       pane.status.className = response.error ? "status error" : "status";
-      if (pane === activePane) focusPane(pane);
+      if (pane === activePane && document.activeElement !== pane.input) focusPane(pane);
     }
   };
 
