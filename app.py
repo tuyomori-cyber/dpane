@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dir-group WebUI: a local multi-pane file browser."""
+"""Dpaie: a local multi-pane file browser."""
 
 from __future__ import annotations
 
@@ -139,7 +139,7 @@ def is_executable_binary(path: Path) -> bool:
 
 class DirGroupWindow(Gtk.ApplicationWindow):
     def __init__(self, application: Gtk.Application) -> None:
-        super().__init__(application=application, title="dir-group WebUI (MVP)")
+        super().__init__(application=application, title="Dpaie")
         self.set_default_size(1200, 760)
         apply_window_icon(self)
         self.file_clipboard = None
@@ -498,7 +498,12 @@ class DirGroupApplication(Gtk.Application):
         window.present()
 
 
-if __name__ == "__main__":
+def main() -> int:
     if not UI_FILE.is_file():
         sys.exit(f"UI file is missing: {UI_FILE}")
-    DirGroupApplication().run(sys.argv)
+    GLib.set_application_name("Dpaie")
+    return DirGroupApplication().run(sys.argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

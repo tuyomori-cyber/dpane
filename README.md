@@ -1,6 +1,6 @@
-# dir-group WebUI
+# Dpaie
 
-Xubuntu 24.04 / Xfce向けの、複数のディレクトリを一つのウィンドウで表示するファイル管理環境の試作です。各ペインでフォルダを移動でき、左右・上下の分割や境界のドラッグによるサイズ変更ができます。
+Xubuntu 24.04 / Xfce向けの、複数のディレクトリを一つのウィンドウで表示するファイル管理環境です。旧称は `dir-group-webUI`、リポジトリ名は `dpane` です。各ペインでフォルダを移動でき、左右・上下の分割や境界のドラッグによるサイズ変更ができます。
 
 ## 起動方法
 
@@ -10,13 +10,13 @@ Python 3、PyGObject、GTK 3、WebKitGTK 4.1が必要です。Xubuntu 24.04で�
 sudo apt install python3 python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1
 ```
 
-`dir-group-webUI` ディレクトリで次を実行します。
+リポジトリのディレクトリで次を実行します。
 
 ```bash
-/usr/bin/python3 app.py
+./dpane
 ```
 
-システムのPythonを指定するのは、ディストリビューションのPyGObjectを利用するためです。ブラウザでHTMLファイルを直接開く方式ではなく、GTKウィンドウ内のWebKitGTKで表示します。
+起動コマンドはディストリビューションのPyGObjectを利用するため、システムのPythonから既存の `app.py` を呼び出します。従来の `/usr/bin/python3 app.py` も利用できます。`dpane` コマンドをPATHへインストールする設定は含まれていません。GTKウィンドウ内のWebKitGTKで表示します。
 
 ウィンドウアイコンには `icon/4つのフォルダー入りアイコン.png` を使用します。アイコンファイルが読み込めない場合もアプリは起動します。
 

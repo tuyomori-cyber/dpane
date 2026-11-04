@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+"""Dpaie command-line entry point."""
+import sys
+
+from app import main
+
+
+if __name__ == "__main__":
+    sys.exit(main())
