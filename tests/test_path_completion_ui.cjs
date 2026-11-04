@@ -5,16 +5,16 @@ const vm = require("vm");
 class Element {
   constructor(tag = "div") {
     this.tag = tag; this.children = []; this.events = {}; this.dataset = {}; this.style = {}; this.hidden = false;
-    this.value = ""; this.selectionStart = this.selectionEnd = 0; this.className = "";
+    this.value = ""; this.selectionStart = this.selectionEnd = 0; this.className = ""; this.attributes = {};
     this.classList = { toggle() {}, add() {}, remove() {} };
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up", "close-pane", "split-horizontal", "split-vertical", "entry-name"]) {
+    for (const name of ["path", "status", "entry-list", "up", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }
-  querySelector(selector) { return this.parts?.[selector.slice(1)] || null; }
+  querySelector(selector) { return this.parts?.[selector.slice(1)] || this.children.find(child => child.className === selector.slice(1)) || null; }
   querySelectorAll(selector) {
     if (selector === ".split-horizontal, .split-vertical") return [this.parts?.["split-horizontal"], this.parts?.["split-vertical"]].filter(Boolean);
     return selector === "button" ? this.children : this.children.filter(child => child.className === selector.slice(1));
@@ -23,7 +23,7 @@ class Element {
   replaceChildren(...items) { this.children = []; this.append(...items); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(item => item !== this); }
   addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }
-  setAttribute() {}
+  setAttribute(name, value) { this.attributes[name] = value; }
   focus() { document.activeElement = this; }
   scrollIntoView() {}
   getBoundingClientRect() { return { left: 0, bottom: 20, width: 200 }; }
@@ -111,13 +111,41 @@ assert.equal(scaleCalls.at(-1).percent, 130);
 assert.equal(ids["#ui-scale-value"].textContent, "130%");
 
 window.dirGroup.receiveDirectory({ paneId: "1", path: "/home/test", entries: [
-  { name: ".hidden", directory: true }, { name: ".file", directory: false }, { name: "visible", directory: true }
+  { name: ".hidden", directory: true, modified: 1700000000 }, { name: ".file", directory: false, modified: null }, { name: "visible", directory: true, modified: 1700000000 }
 ] });
 window.dirGroup.receiveDirectory({ paneId: "2", path: "/home/other", entries: [
   { name: ".second", directory: true }, { name: ".config", directory: false }
 ] });
 const secondPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "2")[0];
 assert.equal(pane.querySelector(".entry-list").children.length, 3);
+input.focus();
+type("~/editing");
+pane.querySelector(".toggle-times").fire("click");
+assert.equal(pane.querySelector(".toggle-times").attributes["aria-pressed"], "true");
+assert.match(pane.querySelector(".entry-list").children[0].children[0].textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+assert.equal(pane.querySelector(".entry-list").children[1].children[0].textContent, "—");
+assert.equal(secondPane.querySelector(".entry-list").children[0].children.length, 0);
+const timeShortcut = { target: input, key: "t", ctrlKey: true, preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(timeShortcut);
+assert(timeShortcut.prevented);
+assert.equal(pane.querySelector(".toggle-times").attributes["aria-pressed"], "false");
+assert.equal(pane.querySelector(".entry-list").children[0].children.length, 0);
+assert.strictEqual(document.activeElement, input);
+assert.equal(input.value, "~/editing");
+const focusedEntry = pane.querySelector(".entry-list").children[0];
+focusedEntry.focus();
+const focusedTimeShortcut = { target: focusedEntry, key: "t", ctrlKey: true, preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(focusedTimeShortcut);
+assert.strictEqual(document.activeElement, focusedEntry);
+assert.strictEqual(pane.querySelector(".entry-list").children[0], focusedEntry);
+input.focus();
+for (const handler of document.events.keydown) handler(timeShortcut);
+secondPane.querySelector(".toggle-times").fire("click");
+window.dirGroup.receiveDirectory({ paneId: "2", path: "/home/other", entries: [
+  { name: ".second", directory: true, modified: 1700000000 }, { name: ".config", directory: false }
+] });
+assert.equal(secondPane.querySelector(".toggle-times").attributes["aria-pressed"], "true");
+assert.equal(secondPane.querySelector(".entry-list").children[0].children.length, 1);
 ids["#show-hidden-folders"].checked = false;
 ids["#show-hidden-folders"].fire("change");
 assert.equal(pane.querySelector(".entry-list").children.length, 2);

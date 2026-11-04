@@ -369,6 +369,31 @@
     if (scroll) buttons[pane.selectedIndex].scrollIntoView({ block: "nearest" });
   }
 
+  function formatModified(seconds) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "—";
+    const date = new Date(seconds * 1000);
+    if (Number.isNaN(date.getTime())) return "—";
+    const two = value => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`;
+  }
+
+  function toggleModifiedTimes(pane) {
+    pane.showModified = !pane.showModified;
+    pane.timeButton.setAttribute("aria-pressed", String(pane.showModified));
+    pane.list.querySelectorAll(".entry").forEach((button, index) => {
+      updateEntryTimestamp(button, pane.entries[index], pane.showModified);
+    });
+  }
+
+  function updateEntryTimestamp(button, entry, show) {
+    const existing = button.querySelector(".entry-time");
+    if (!show) { if (existing) existing.remove(); return; }
+    const modified = existing || document.createElement("span");
+    modified.className = "entry-time";
+    modified.textContent = formatModified(entry.modified);
+    if (!existing) button.append(modified);
+  }
+
   function activateSelectedEntry(pane) {
     const entry = pane.entries[pane.selectedIndex];
     if (!entry) return;
@@ -405,6 +430,12 @@
         fileAction(activePane, key === "o" ? "choose" : "execute");
         return;
       }
+    }
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "t" &&
+        (event.target === document.body || event.target.closest("#workspace"))) {
+      event.preventDefault();
+      toggleModifiedTimes(activePane);
+      return;
     }
     const isTab = event.key === "Tab" || event.key === "ISO_Left_Tab" || event.code === "Tab";
     if (event.ctrlKey && isTab) {
@@ -444,17 +475,21 @@
     const element = document.createElement("section");
     element.className = "pane";
     element.dataset.paneId = id;
-    const pane = { id, element, path, entries: [], allEntries: [], selectedIndex: -1, selectInitial };
+    const pane = { id, element, path, entries: [], allEntries: [], selectedIndex: -1, selectInitial, showModified: false };
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
         <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
         <button class="split-horizontal" title="右にペインを追加 (Ctrl+Shift+L)" aria-label="右にペインを追加">||</button>
         <button class="split-vertical" title="下にペインを追加 (Ctrl+Shift+J)" aria-label="下にペインを追加">＝</button>
         <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
-        </div><p class="status">準備中…</p><div class="entry-list"></div>`;
+        </div><div class="status-row"><p class="status">準備中…</p>
+        <button class="toggle-times" aria-pressed="false" title="更新日時の表示切替 (Ctrl+T)">Update times</button>
+        </div><div class="entry-list"></div>`;
     pane.input = element.querySelector(".path");
     setupCompletion(pane);
     pane.status = element.querySelector(".status");
+    pane.timeButton = element.querySelector(".toggle-times");
+    pane.timeButton.addEventListener("click", () => toggleModifiedTimes(pane));
     pane.list = element.querySelector(".entry-list");
     pane.list.addEventListener("contextmenu", event => {
       const entry = event.target.closest(".entry");
@@ -490,6 +525,7 @@
       button.className = "entry";
       button.innerHTML = `<span class="entry-icon">${entry.directory ? "📁" : "📄"}</span><span class="entry-name"></span>`;
       button.querySelector(".entry-name").textContent = entry.name;
+      updateEntryTimestamp(button, entry, pane.showModified);
       button.addEventListener("click", () => selectEntry(pane, index, false));
       button.addEventListener("dblclick", () => activateSelectedEntry(pane));
       return button;

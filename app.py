@@ -67,7 +67,7 @@ def list_directory(requested_path: object) -> dict[str, object]:
     try:
         directory = Gio.File.new_for_path(str(path))
         enumerator = directory.enumerate_children(
-            "standard::name,standard::type,standard::size",
+            "standard::name,standard::type,standard::size,time::modified",
             Gio.FileQueryInfoFlags.NONE,
             None,
         )
@@ -81,6 +81,7 @@ def list_directory(requested_path: object) -> dict[str, object]:
                     "name": info.get_name(),
                     "directory": file_type == Gio.FileType.DIRECTORY,
                     "size": info.get_size(),
+                    "modified": info.get_attribute_uint64("time::modified") if info.has_attribute("time::modified") else None,
                 }
             )
         enumerator.close(None)
