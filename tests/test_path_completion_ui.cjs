@@ -10,12 +10,15 @@ class Element {
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up", "close-pane"]) {
+    for (const name of ["path", "status", "entry-list", "up", "close-pane", "split-horizontal", "split-vertical", "entry-name"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }
   querySelector(selector) { return this.parts?.[selector.slice(1)] || null; }
-  querySelectorAll(selector) { return selector === "button" ? this.children : this.children.filter(child => child.className === selector.slice(1)); }
+  querySelectorAll(selector) {
+    if (selector === ".split-horizontal, .split-vertical") return [this.parts?.["split-horizontal"], this.parts?.["split-vertical"]].filter(Boolean);
+    return selector === "button" ? this.children : this.children.filter(child => child.className === selector.slice(1));
+  }
   append(...items) { for (const item of items) { item.parent = this; this.children.push(item); } }
   replaceChildren(...items) { this.children = []; this.append(...items); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(item => item !== this); }
@@ -34,10 +37,11 @@ class Element {
 }
 
 const workspace = new Element("main");
-const ids = { "#workspace": workspace, "#split-horizontal": new Element(), "#split-vertical": new Element() };
+const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-folders": new Element(), ".view-menu": new Element() };
+ids["#show-hidden-folders"].checked = true;
 const document = { body: new Element("body"), activeElement: null, events: {}, querySelector: id => ids[id], createElement: tag => new Element(tag), addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
-const calls = [], directoryCalls = [], closeCalls = [];
-const window = { innerWidth: 1200, innerHeight: 800, webkit: { messageHandlers: { directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) } } } };
+const calls = [], directoryCalls = [], closeCalls = [], scaleCalls = [], operationCalls = [];
+const window = { innerWidth: 1200, innerHeight: 800, webkit: { messageHandlers: { directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) } } } };
 const timers = new Map(); let nextTimer = 0;
 const setTimeout = fn => { const id = ++nextTimer; timers.set(id, fn); return id; };
 const clearTimeout = id => timers.delete(id);
@@ -101,10 +105,52 @@ input.fire("keydown", { key: "Enter" });
 assert.equal(directoryCalls.at(-1).path, "~/unfinished");
 pane.querySelector(".up").fire("click");
 assert.equal(directoryCalls.at(-1).path, "/home/test/..");
+ids["#ui-scale"].value = "130";
+ids["#ui-scale"].fire("input");
+assert.equal(scaleCalls.at(-1).percent, 130);
+assert.equal(ids["#ui-scale-value"].textContent, "130%");
+
+window.dirGroup.receiveDirectory({ paneId: "1", path: "/home/test", entries: [
+  { name: ".hidden", directory: true }, { name: ".file", directory: false }, { name: "visible", directory: true }
+] });
+window.dirGroup.receiveDirectory({ paneId: "2", path: "/home/other", entries: [
+  { name: ".second", directory: true }, { name: ".config", directory: false }
+] });
+const secondPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "2")[0];
+assert.equal(pane.querySelector(".entry-list").children.length, 3);
+ids["#show-hidden-folders"].checked = false;
+ids["#show-hidden-folders"].fire("change");
+assert.equal(pane.querySelector(".entry-list").children.length, 2);
+assert.equal(secondPane.querySelector(".entry-list").children.length, 1);
+pane.focus();
+const deletion = { target: pane, key: "Delete", preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(deletion);
+assert(deletion.prevented);
+assert.equal(operationCalls.length, 0); // Hidden selected folder must not select a different item.
+ids["#show-hidden-folders"].checked = true;
+ids["#show-hidden-folders"].fire("change");
+assert.equal(pane.querySelector(".entry-list").children.length, 3);
+input.focus();
 const switchPane = { target: input, key: "Tab", ctrlKey: true, preventDefault() { this.prevented = true; } };
 for (const handler of document.events.keydown) handler(switchPane);
 assert(switchPane.prevented);
 assert.equal(document.activeElement.dataset.paneId, "2");
+const targetedPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "1")[0];
+targetedPane.querySelector(".split-horizontal").fire("click");
+assert.equal(directoryCalls.at(-1).path, "/home/test");
+assert.equal(document.activeElement.dataset.paneId, "4");
+const newPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "4")[0];
+newPane.querySelector(".close-pane").fire("click");
+for (let i = 0; i < 5; i++) targetedPane.querySelector(".split-horizontal").fire("click");
+let paneList = find(workspace, node => node.className === "pane");
+assert.equal(paneList.length, 8);
+assert(paneList.every(node => node.querySelector(".split-horizontal").disabled && node.querySelector(".split-vertical").disabled));
+targetedPane.querySelector(".split-vertical").fire("click");
+assert.equal(find(workspace, node => node.className === "pane").length, 8);
+for (let id = 9; id >= 5; id--) {
+  const added = find(workspace, node => node.className === "pane" && node.dataset.paneId === String(id))[0];
+  added.querySelector(".close-pane").fire("click");
+}
 const pane3 = find(workspace, node => node.className === "pane" && node.dataset.paneId === "3")[0];
 pane3.querySelector(".close-pane").fire("click");
 assert.deepEqual(find(workspace, node => node.className === "pane").map(node => node.dataset.paneId), ["1", "2"]);

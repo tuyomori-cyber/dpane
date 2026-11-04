@@ -160,6 +160,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         manager.connect("script-message-received::fileOperation", self.on_file_operation_request)
         manager.register_script_message_handler("pathCompletion")
         manager.connect("script-message-received::pathCompletion", self.on_path_completion_request)
+        manager.register_script_message_handler("uiScale")
+        manager.connect("script-message-received::uiScale", self.on_ui_scale_request)
 
         self.web_view = WebKit2.WebView.new_with_user_content_manager(manager)
         settings = self.web_view.get_settings()
@@ -188,6 +190,15 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             response = {"error": f"要求を解釈できません: {error}"}
 
         self.send_to_ui("receiveDirectory", response)
+
+    def on_ui_scale_request(self, _manager, result) -> None:
+        try:
+            request = json.loads(result.get_js_value().to_json(0))
+            percent = request.get("percent")
+            if type(percent) is int and 70 <= percent <= 150 and percent % 10 == 0:
+                self.web_view.set_zoom_level(percent / 100)
+        except (TypeError, ValueError, AttributeError):
+            return
 
     def on_path_completion_request(self, _manager, result) -> None:
         try:

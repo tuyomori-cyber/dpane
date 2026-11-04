@@ -3,7 +3,11 @@
   const MAX_PANES = 8;
   const defaultPaths = ["~", "~/Downloads", "~/Documents"];
   const panes = new Map();
-  const addButtons = [document.querySelector("#split-horizontal"), document.querySelector("#split-vertical")];
+  const scaleInput = document.querySelector("#ui-scale");
+  const scaleValue = document.querySelector("#ui-scale-value");
+  const hiddenFoldersInput = document.querySelector("#show-hidden-folders");
+  const viewMenu = document.querySelector(".view-menu");
+  let showHiddenFolders = hiddenFoldersInput.checked;
   let nextPaneId = 1;
   let layout;
   let activePane;
@@ -204,6 +208,7 @@
   document.body.append(menu);
   document.addEventListener("pointerdown", event => {
     if (!menu.contains(event.target)) menu.hidden = true;
+    if (!viewMenu.contains(event.target)) viewMenu.open = false;
   });
 
   function showFileMenu(event, pane, index) {
@@ -240,7 +245,11 @@
   }
 
   function updateAddButtons() {
-    addButtons.forEach(button => { button.disabled = panes.size >= MAX_PANES; });
+    panes.forEach(pane => {
+      pane.element.querySelectorAll(".split-horizontal, .split-vertical").forEach(button => {
+        button.disabled = panes.size >= MAX_PANES;
+      });
+    });
   }
 
   function splitNode(first, second, direction) {
@@ -317,9 +326,8 @@
     updateAddButtons();
   }
 
-  function addPane(direction) {
-    if (!activePane || panes.size >= MAX_PANES) return;
-    const source = activePane;
+  function addPane(direction, source = activePane) {
+    if (!source || !panes.has(source.id) || panes.size >= MAX_PANES) return;
     const pane = makePane(source.path, false);
     layout = replacePane(layout, source, splitNode({ pane: source }, { pane }, direction));
     renderLayout();
@@ -371,6 +379,12 @@
 
   function handlePaneKeydown(event) {
     if (!activePane) return;
+    if (event.key === "Escape" && viewMenu.open && viewMenu.contains(event.target)) {
+      event.preventDefault();
+      viewMenu.open = false;
+      viewMenu.querySelector("summary").focus();
+      return;
+    }
     if (event.key === "Escape" && !menu.hidden) {
       event.preventDefault();
       menu.hidden = true;
@@ -430,10 +444,12 @@
     const element = document.createElement("section");
     element.className = "pane";
     element.dataset.paneId = id;
-    const pane = { id, element, path, entries: [], selectedIndex: -1, selectInitial };
+    const pane = { id, element, path, entries: [], allEntries: [], selectedIndex: -1, selectInitial };
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
         <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
+        <button class="split-horizontal" title="右にペインを追加 (Ctrl+Shift+L)" aria-label="右にペインを追加">||</button>
+        <button class="split-vertical" title="下にペインを追加 (Ctrl+Shift+J)" aria-label="下にペインを追加">＝</button>
         <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
         </div><p class="status">準備中…</p><div class="entry-list"></div>`;
     pane.input = element.querySelector(".path");
@@ -447,6 +463,8 @@
     });
     element.tabIndex = 0;
     const go = () => { hideCompletion(pane); pane.submittingPath = pane.input.value; requestDirectory(pane, pane.input.value.trim()); };
+    element.querySelector(".split-horizontal").addEventListener("click", () => addPane("horizontal", pane));
+    element.querySelector(".split-vertical").addEventListener("click", () => addPane("vertical", pane));
     element.querySelector(".close-pane").addEventListener("click", () => closePane(pane));
     pane.input.addEventListener("keydown", event => { if (event.key === "Enter" && !event.isComposing) go(); });
     element.querySelector(".up").addEventListener("click", () => {
@@ -463,6 +481,22 @@
     return pane;
   }
 
+  function renderEntries(pane, selectedName, selectFirst = false) {
+    pane.entries = pane.allEntries.filter(entry => showHiddenFolders || !entry.directory || !entry.name.startsWith("."));
+    const selectedIndex = pane.entries.findIndex(entry => entry.name === selectedName);
+    pane.selectedIndex = selectedIndex >= 0 ? selectedIndex : (selectFirst && pane.entries.length ? 0 : -1);
+    pane.list.replaceChildren(...pane.entries.map((entry, index) => {
+      const button = document.createElement("button");
+      button.className = "entry";
+      button.innerHTML = `<span class="entry-icon">${entry.directory ? "📁" : "📄"}</span><span class="entry-name"></span>`;
+      button.querySelector(".entry-name").textContent = entry.name;
+      button.addEventListener("click", () => selectEntry(pane, index, false));
+      button.addEventListener("dblclick", () => activateSelectedEntry(pane));
+      return button;
+    }));
+    if (pane.selectedIndex >= 0) selectEntry(pane, pane.selectedIndex, false);
+  }
+
   window.dirGroup = {
     receiveDirectory(response) {
       const pane = panes.get(response.paneId);
@@ -477,34 +511,25 @@
         return;
       }
       pane.path = response.path;
-      pane.entries = response.entries;
-      pane.selectedIndex = pane.selectInitial ? 0 : -1;
+      pane.allEntries = response.entries;
+      pane.truncated = response.truncated;
+      let selectedName;
       if (pane.pendingSelection) {
         if (response.path === pane.pendingSelection.directory) {
-          const selectedIndex = response.entries.findIndex(entry => entry.name === pane.pendingSelection.name);
-          if (selectedIndex >= 0) pane.selectedIndex = selectedIndex;
+          selectedName = pane.pendingSelection.name;
         }
         pane.pendingSelection = null;
       }
+      renderEntries(pane, selectedName, selectedName === undefined && pane.selectInitial);
       pane.selectInitial = true;
       if (!preserveInput) pane.input.value = displayPath(response.path);
-      pane.status.textContent = `${response.entries.length} 件${response.truncated ? "（先頭 1,000 件）" : ""} · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3`;
+      pane.status.textContent = `${pane.entries.length} 件${response.truncated ? "（取得上限 1,000 件）" : ""} · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3`;
       pane.status.className = "status";
       if (pane.operationNotice) {
         pane.status.textContent = pane.operationNotice.text;
         pane.status.className = pane.operationNotice.error ? "status error" : "status";
         pane.operationNotice = null;
       }
-      pane.list.replaceChildren(...response.entries.map((entry, index) => {
-        const button = document.createElement("button");
-        button.className = "entry";
-        button.innerHTML = `<span class="entry-icon">${entry.directory ? "📁" : "📄"}</span><span class="entry-name"></span>`;
-        button.querySelector(".entry-name").textContent = entry.name;
-        button.addEventListener("click", () => selectEntry(pane, index, false));
-        button.addEventListener("dblclick", () => activateSelectedEntry(pane));
-        return button;
-      }));
-      if (pane.selectedIndex >= 0) selectEntry(pane, pane.selectedIndex, false);
       if (pane === activePane && !preserveInput) focusPane(pane);
     },
     receivePathCompletion(response) {
@@ -552,6 +577,18 @@
   renderLayout();
   focusPane(initial[0]);
   document.addEventListener("keydown", handlePaneKeydown, true);
-  addButtons[0].addEventListener("click", () => addPane("horizontal"));
-  addButtons[1].addEventListener("click", () => addPane("vertical"));
+  scaleInput.addEventListener("input", () => {
+    const percent = Number(scaleInput.value);
+    scaleValue.textContent = `${percent}%`;
+    window.webkit.messageHandlers.uiScale.postMessage({ percent });
+  });
+  hiddenFoldersInput.addEventListener("change", () => {
+    showHiddenFolders = hiddenFoldersInput.checked;
+    panes.forEach(pane => {
+      const selectedName = pane.entries[pane.selectedIndex]?.name;
+      renderEntries(pane, selectedName);
+      pane.status.textContent = `${pane.entries.length} 件${pane.truncated ? "（取得上限 1,000 件）" : ""} · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3`;
+      pane.status.className = "status";
+    });
+  });
 })();
