@@ -10,7 +10,7 @@ class Element {
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up"]) {
+    for (const name of ["path", "status", "entry-list", "up", "close-pane"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }
@@ -34,10 +34,10 @@ class Element {
 }
 
 const workspace = new Element("main");
-const ids = { "#workspace": workspace, "#split-horizontal": new Element(), "#split-vertical": new Element(), "#close-pane": new Element() };
+const ids = { "#workspace": workspace, "#split-horizontal": new Element(), "#split-vertical": new Element() };
 const document = { body: new Element("body"), activeElement: null, events: {}, querySelector: id => ids[id], createElement: tag => new Element(tag), addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
-const calls = [], directoryCalls = [];
-const window = { innerWidth: 1200, innerHeight: 800, webkit: { messageHandlers: { directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) } } } };
+const calls = [], directoryCalls = [], closeCalls = [];
+const window = { innerWidth: 1200, innerHeight: 800, webkit: { messageHandlers: { directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) } } } };
 const timers = new Map(); let nextTimer = 0;
 const setTimeout = fn => { const id = ++nextTimer; timers.set(id, fn); return id; };
 const clearTimeout = id => timers.delete(id);
@@ -105,4 +105,11 @@ const switchPane = { target: input, key: "Tab", ctrlKey: true, preventDefault() 
 for (const handler of document.events.keydown) handler(switchPane);
 assert(switchPane.prevented);
 assert.equal(document.activeElement.dataset.paneId, "2");
+const pane3 = find(workspace, node => node.className === "pane" && node.dataset.paneId === "3")[0];
+pane3.querySelector(".close-pane").fire("click");
+assert.deepEqual(find(workspace, node => node.className === "pane").map(node => node.dataset.paneId), ["1", "2"]);
+const pane2 = find(workspace, node => node.className === "pane" && node.dataset.paneId === "2")[0];
+pane2.querySelector(".close-pane").fire("click");
+pane.querySelector(".close-pane").fire("click");
+assert.equal(closeCalls.length, 1);
 console.log("Path completion UI checks passed.");

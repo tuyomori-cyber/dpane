@@ -326,13 +326,12 @@
     focusPane(pane);
   }
 
-  function closePane() {
-    if (!activePane) return;
+  function closePane(closing = activePane) {
+    if (!closing || !panes.has(closing.id)) return;
     if (panes.size === 1) {
       window.webkit.messageHandlers.closeWindow.postMessage({});
       return;
     }
-    const closing = activePane;
     const next = firstPane(siblingOf(layout, closing));
     layout = removePane(layout, closing);
     panes.delete(closing.id);
@@ -435,6 +434,7 @@
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
         <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
+        <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
         </div><p class="status">準備中…</p><div class="entry-list"></div>`;
     pane.input = element.querySelector(".path");
     setupCompletion(pane);
@@ -447,6 +447,7 @@
     });
     element.tabIndex = 0;
     const go = () => { hideCompletion(pane); pane.submittingPath = pane.input.value; requestDirectory(pane, pane.input.value.trim()); };
+    element.querySelector(".close-pane").addEventListener("click", () => closePane(pane));
     pane.input.addEventListener("keydown", event => { if (event.key === "Enter" && !event.isComposing) go(); });
     element.querySelector(".up").addEventListener("click", () => {
       const path = pane.path || pane.input.value;
@@ -553,5 +554,4 @@
   document.addEventListener("keydown", handlePaneKeydown, true);
   addButtons[0].addEventListener("click", () => addPane("horizontal"));
   addButtons[1].addEventListener("click", () => addPane("vertical"));
-  document.querySelector("#close-pane").addEventListener("click", closePane);
 })();

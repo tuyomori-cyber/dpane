@@ -15,7 +15,8 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("WebKit2", "4.1")
-from gi.repository import Gio, GLib, Gtk, WebKit2  # noqa: E402
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf, Gio, GLib, Gtk, WebKit2  # noqa: E402
 
 import file_operations  # noqa: E402
 import path_completion  # noqa: E402
@@ -23,7 +24,26 @@ import path_completion  # noqa: E402
 
 APP_DIR = Path(__file__).resolve().parent
 UI_FILE = APP_DIR / "ui" / "index.html"
+ICON_FILE = APP_DIR / "icon" / "4つのフォルダー入りアイコン.png"
+ICON_ZOOM = 1.3
 MAX_ENTRIES = 1_000
+
+
+def apply_window_icon(window: Gtk.Window) -> None:
+    """Reduce horizontal margins to enlarge the artwork without distortion."""
+    try:
+        source = GdkPixbuf.Pixbuf.new_from_file(str(ICON_FILE))
+        width, height = source.get_width(), source.get_height()
+        cropped_width = min(width, max(height, round(width / ICON_ZOOM)))
+        artwork = source.new_subpixbuf((width - cropped_width) // 2, 0, cropped_width, height)
+        icons = []
+        for size in (16, 32, 48, 64, 128):
+            scale = size / max(cropped_width, height)
+            icons.append(artwork.scale_simple(max(1, round(cropped_width * scale)),
+                                             max(1, round(height * scale)), GdkPixbuf.InterpType.BILINEAR))
+        window.set_icon_list(icons)
+    except GLib.Error as error:
+        print(f"ウィンドウアイコンを読み込めません: {error}", file=sys.stderr)
 
 
 def list_directory(requested_path: object) -> dict[str, object]:
@@ -121,6 +141,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
     def __init__(self, application: Gtk.Application) -> None:
         super().__init__(application=application, title="dir-group WebUI (MVP)")
         self.set_default_size(1200, 760)
+        apply_window_icon(self)
         self.file_clipboard = None
         self.file_operation_busy = False
         self.completion_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="path-completion")
