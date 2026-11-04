@@ -1,16 +1,105 @@
 (() => {
+  const startupJsStart = window.dpaneStartupTiming ? performance.now() : 0;
+  function reportStartup(event, extra = {}) {
+    if (!window.dpaneStartupTiming) return;
+    if (window.dpaneStartupSummary && !["dom-content-loaded", "window-load", "dom-already", "load-already"].includes(event)) return;
+    window.webkit.messageHandlers.startupDetail.postMessage({
+      event, elapsed: performance.now() - startupJsStart, ...extra
+    });
+  }
+  function reportResourceTimings() {
+    if (typeof performance.getEntriesByType !== "function") {
+      reportStartup("performance-unavailable");
+      return;
+    }
+    const relativeTime = value => Number.isFinite(value) && value > 0 ? value - startupJsStart : null;
+    const entries = performance.getEntriesByType("resource");
+    reportStartup("resource-summary", { count: entries.length });
+    entries.slice(0, 30).forEach(entry => {
+      const name = entry.name.split(/[?#]/, 1)[0];
+      const kind = name.endsWith("/style.css") ? "style.css" : name.endsWith("/app.js") ? "app.js" : "other";
+      reportStartup("resource", {
+        kind, start: relativeTime(entry.startTime), end: relativeTime(entry.responseEnd), duration: entry.duration
+      });
+    });
+    const navigation = performance.getEntriesByType("navigation")[0];
+    if (!navigation) {
+      reportStartup("navigation-unavailable");
+      return;
+    }
+    reportStartup("navigation", {
+      domStart: relativeTime(navigation.domContentLoadedEventStart),
+      domEnd: relativeTime(navigation.domContentLoadedEventEnd),
+      loadStart: relativeTime(navigation.loadEventStart),
+      loadEnd: relativeTime(navigation.loadEventEnd)
+    });
+  }
+  reportStartup("js-start");
+  if (window.dpaneStartupTiming) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => reportStartup("dom-content-loaded"), { once: true });
+    } else reportStartup("dom-already");
+    if (document.readyState !== "complete") {
+      window.addEventListener("load", () => {
+        reportStartup("window-load");
+        if (!window.dpaneStartupSummary) setTimeout(reportResourceTimings, 0);
+      }, { once: true });
+    } else {
+      reportStartup("load-already");
+      if (!window.dpaneStartupSummary) setTimeout(reportResourceTimings, 0);
+    }
+  }
   const workspace = document.querySelector("#workspace");
   const MAX_PANES = 8;
   const defaultPaths = ["~", "~/Downloads", "~/Documents"];
   const panes = new Map();
   const scaleInput = document.querySelector("#ui-scale");
   const scaleValue = document.querySelector("#ui-scale-value");
-  const hiddenFoldersInput = document.querySelector("#show-hidden-folders");
+  const hiddenEntriesInput = document.querySelector("#show-hidden-entries");
+  const shortcutHintsInput = document.querySelector("#show-shortcut-hints");
   const viewMenu = document.querySelector(".view-menu");
-  let showHiddenFolders = hiddenFoldersInput.checked;
+  const helpMenu = document.querySelector(".help-menu");
+  const shortcutPage = document.querySelector("#shortcut-page");
+  const openShortcutsButton = document.querySelector("#open-shortcuts");
+  const closeShortcutsButton = document.querySelector("#close-shortcuts");
+  const initialSettings = window.dpaneInitialViewSettings;
+  if (initialSettings) {
+    scaleInput.value = String(initialSettings.scale);
+    scaleValue.textContent = `${initialSettings.scale}%`;
+    hiddenEntriesInput.checked = initialSettings.showHiddenEntries;
+    shortcutHintsInput.checked = initialSettings.showShortcutHints;
+  }
+  let showHiddenEntries = hiddenEntriesInput.checked;
+  let showShortcutHints = shortcutHintsInput.checked;
   let nextPaneId = 1;
   let layout;
   let activePane;
+  const pendingInitialListings = window.dpaneStartupTiming ? new Set(["1", "2", "3"]) : null;
+  const initialReplyRequests = window.dpaneStartupReply ? new Set(["1", "2", "3"]) : null;
+
+  function markInitialListingRendered(paneId) {
+    if (!pendingInitialListings || !pendingInitialListings.delete(paneId) || pendingInitialListings.size) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.webkit.messageHandlers.startupPaint.postMessage({});
+    }));
+  }
+
+  function saveViewSettings() {
+    window.webkit.messageHandlers.saveViewSettings.postMessage({
+      scale: Number(scaleInput.value), showHiddenEntries, showShortcutHints
+    });
+  }
+
+  function closeShortcuts() {
+    shortcutPage.hidden = true;
+    focusPane(activePane);
+  }
+
+  function openShortcuts() {
+    helpMenu.open = false;
+    shortcutPage.hidden = false;
+    closeShortcutsButton.focus();
+  }
 
   function displayPath(path) {
     return path.startsWith("/home/") ? path.replace(/^\/home\/[^/]+/, "~") : path;
@@ -19,6 +108,12 @@
   function requestDirectory(pane, path) {
     pane.status.textContent = "読み込み中…";
     pane.status.className = "status";
+    if (initialReplyRequests?.delete(pane.id)) {
+      window.webkit.messageHandlers.initialDirectoryReply.postMessage({ paneId: pane.id, path })
+        .then(response => window.dirGroup.receiveDirectory(response))
+        .catch(() => window.dirGroup.receiveDirectory({ paneId: pane.id, error: "一覧を取得できませんでした。" }));
+      return;
+    }
     window.webkit.messageHandlers.directoryListing.postMessage({ paneId: pane.id, path });
   }
 
@@ -167,8 +262,8 @@
   }
 
   function fileAction(pane, action) {
-    const entry = pane.entries[pane.selectedIndex];
-    if (!entry || entry.directory) return;
+    const [entry] = selectedEntries(pane);
+    if (selectedEntries(pane).length !== 1 || entry.directory) return;
     const path = `${pane.path}/${entry.name}`;
     if (action === "execute") {
       pane.status.textContent = "実行するファイルを確認しています…";
@@ -178,13 +273,15 @@
   }
 
   function fileOperation(pane, action) {
-    const entry = pane.entries[pane.selectedIndex];
     const usesFolder = ["paste", "new_folder", "new_file"].includes(action);
-    if (!usesFolder && !entry) return;
-    const path = usesFolder ? pane.path : `${pane.path}/${entry.name}`;
+    const entries = selectedEntries(pane);
+    if (!usesFolder && !entries.length) return;
+    if (action === "rename" && entries.length !== 1) return;
+    const request = { paneId: pane.id, action, path: pane.path };
+    if (!usesFolder) request.paths = entries.map(entry => `${pane.path}/${entry.name}`);
     pane.status.textContent = "ファイル操作を処理しています…";
     pane.status.className = "status";
-    window.webkit.messageHandlers.fileOperation.postMessage({ paneId: pane.id, action, path });
+    window.webkit.messageHandlers.fileOperation.postMessage(request);
   }
 
   const menu = document.createElement("div");
@@ -213,12 +310,13 @@
 
   function showFileMenu(event, pane, index) {
     event.preventDefault();
-    if (index >= 0) selectEntry(pane, index, false);
+    if (index >= 0 && !pane.selectedNames.has(pane.entries[index].name)) selectEntry(pane, index, false);
     focusPane(pane);
-    const isFile = index >= 0 && !pane.entries[index].directory;
+    const selected = selectedEntries(pane);
+    const isFile = selected.length === 1 && !selected[0].directory;
     menu.querySelectorAll("button").forEach(button => {
       const action = button.dataset.action;
-      button.hidden = action === "rename" ? index < 0 : !action.startsWith("new_") && !isFile;
+      button.hidden = action === "rename" ? selected.length !== 1 : !action.startsWith("new_") && !isFile;
     });
     menu.hidden = false;
     menu.style.left = `${Math.max(0, Math.min(event.clientX, window.innerWidth - menu.offsetWidth))}px`;
@@ -361,12 +459,112 @@
     if (pane) focusPane(pane);
   }
 
-  function selectEntry(pane, index, scroll = true) {
+  function selectedEntries(pane) {
+    return pane.entries.filter(entry => pane.selectedNames.has(entry.name));
+  }
+
+  function defaultStatus(pane) {
+    const selected = pane.selectedNames.size ? ` · ${pane.selectedNames.size} 件選択` : "";
+    const hints = showShortcutHints ? " · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3" : "";
+    return `${pane.entries.length} 件${pane.truncated ? "（取得上限 1,000 件）" : ""}${selected}${hints}`;
+  }
+
+  function updateSelection(pane, scroll = true) {
     const buttons = [...pane.list.querySelectorAll(".entry")];
-    if (!buttons.length) return;
-    pane.selectedIndex = Math.max(0, Math.min(index, buttons.length - 1));
-    buttons.forEach((button, itemIndex) => button.classList.toggle("selected", itemIndex === pane.selectedIndex));
-    if (scroll) buttons[pane.selectedIndex].scrollIntoView({ block: "nearest" });
+    buttons.forEach((button, index) => button.classList.toggle("selected", pane.selectedNames.has(pane.entries[index].name)));
+    if (scroll && pane.selectedIndex >= 0 && buttons[pane.selectedIndex]) {
+      buttons[pane.selectedIndex].scrollIntoView({ block: "nearest" });
+    }
+    if (pane.status?.className === "status") pane.status.textContent = defaultStatus(pane);
+  }
+
+  function selectRange(pane, index, scroll = true) {
+    const anchor = pane.selectionAnchor >= 0 ? pane.selectionAnchor : (pane.selectedIndex >= 0 ? pane.selectedIndex : index);
+    pane.selectedNames.clear();
+    for (let item = Math.min(anchor, index); item <= Math.max(anchor, index); item++) {
+      pane.selectedNames.add(pane.entries[item].name);
+    }
+    pane.selectionAnchor = anchor;
+    pane.selectedIndex = index;
+    updateSelection(pane, scroll);
+  }
+
+  function selectEntry(pane, index, scroll = true, event = null) {
+    if (index < 0 || index >= pane.entries.length) return;
+    if (event?.shiftKey) {
+      selectRange(pane, index, scroll);
+      return;
+    } else if (event?.ctrlKey) {
+      const name = pane.entries[index].name;
+      if (pane.selectedNames.has(name)) pane.selectedNames.delete(name);
+      else pane.selectedNames.add(name);
+      pane.selectionAnchor = pane.selectedNames.size ? index : -1;
+    } else {
+      pane.selectedNames = new Set([pane.entries[index].name]);
+      pane.selectionAnchor = index;
+    }
+    pane.selectedIndex = pane.selectedNames.size ? index : -1;
+    updateSelection(pane, scroll);
+  }
+
+  function moveSelection(pane, offset, extend = false) {
+    if (!pane.entries.length) return;
+    const current = pane.selectedIndex >= 0 ? pane.selectedIndex : (offset > 0 ? -1 : pane.entries.length);
+    const next = Math.max(0, Math.min(current + offset, pane.entries.length - 1));
+    selectEntry(pane, next, true, extend ? { shiftKey: true } : null);
+  }
+
+  function setupLongPressSelection(button, pane, index) {
+    let timer = null;
+    let active = false;
+    let suppressClick = false;
+    let lastPointerEvent = null;
+    const finish = event => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      if (active) suppressClick = true;
+      active = false;
+      if (event && button.hasPointerCapture(event.pointerId)) button.releasePointerCapture(event.pointerId);
+    };
+    const entryAtPointer = event => {
+      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(".entry");
+      return target ? [...pane.list.querySelectorAll(".entry")].indexOf(target) : -1;
+    };
+    button.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      lastPointerEvent = event;
+      button.setPointerCapture(event.pointerId);
+      timer = setTimeout(() => {
+        timer = null;
+        active = true;
+        pane.selectedNames = new Set([pane.entries[index].name]);
+        pane.selectionAnchor = index;
+        pane.selectedIndex = index;
+        const current = entryAtPointer(lastPointerEvent);
+        if (current >= 0) selectRange(pane, current, false);
+        else updateSelection(pane, false);
+      }, 150);
+    });
+    button.addEventListener("pointermove", event => {
+      lastPointerEvent = event;
+      if (!active) return;
+      const current = entryAtPointer(event);
+      if (current >= 0) selectRange(pane, current, false);
+    });
+    button.addEventListener("pointerup", finish);
+    button.addEventListener("pointercancel", finish);
+    button.addEventListener("lostpointercapture", () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      if (active) suppressClick = true;
+      active = false;
+    });
+    button.addEventListener("click", event => {
+      if (!suppressClick) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      suppressClick = false;
+    }, true);
   }
 
   function formatModified(seconds) {
@@ -395,8 +593,8 @@
   }
 
   function activateSelectedEntry(pane) {
-    const entry = pane.entries[pane.selectedIndex];
-    if (!entry) return;
+    const [entry] = selectedEntries(pane);
+    if (selectedEntries(pane).length !== 1) return;
     const path = `${pane.path}/${entry.name}`;
     if (entry.directory) requestDirectory(pane, path);
     else requestOpen(pane, path);
@@ -404,6 +602,13 @@
 
   function handlePaneKeydown(event) {
     if (!activePane) return;
+    if (!shortcutPage.hidden) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeShortcuts();
+      }
+      return;
+    }
     if (event.key === "Escape" && viewMenu.open && viewMenu.contains(event.target)) {
       event.preventDefault();
       viewMenu.open = false;
@@ -414,6 +619,11 @@
       event.preventDefault();
       menu.hidden = true;
       focusPane(activePane);
+      return;
+    }
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openShortcuts();
       return;
     }
     if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
@@ -458,8 +668,8 @@
       event.preventDefault();
       fileOperation(activePane, "rename");
     }
-    else if (event.key === "ArrowDown") { event.preventDefault(); selectEntry(activePane, activePane.selectedIndex + 1); }
-    else if (event.key === "ArrowUp") { event.preventDefault(); selectEntry(activePane, activePane.selectedIndex - 1); }
+    else if (event.key === "ArrowDown") { event.preventDefault(); moveSelection(activePane, 1, event.shiftKey); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); moveSelection(activePane, -1, event.shiftKey); }
     else if (event.key === "Enter") { event.preventDefault(); activateSelectedEntry(activePane); }
     else if (event.key === "Backspace") {
       event.preventDefault();
@@ -475,7 +685,8 @@
     const element = document.createElement("section");
     element.className = "pane";
     element.dataset.paneId = id;
-    const pane = { id, element, path, entries: [], allEntries: [], selectedIndex: -1, selectInitial, showModified: false };
+    const pane = { id, element, path, entries: [], allEntries: [], selectedNames: new Set(), selectedIndex: -1,
+      selectionAnchor: -1, selectInitial, showModified: false };
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
         <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
@@ -516,27 +727,42 @@
     return pane;
   }
 
-  function renderEntries(pane, selectedName, selectFirst = false) {
-    pane.entries = pane.allEntries.filter(entry => showHiddenFolders || !entry.directory || !entry.name.startsWith("."));
-    const selectedIndex = pane.entries.findIndex(entry => entry.name === selectedName);
-    pane.selectedIndex = selectedIndex >= 0 ? selectedIndex : (selectFirst && pane.entries.length ? 0 : -1);
+  function renderEntries(pane, selectedNames = pane.selectedNames, selectFirst = false) {
+    const cursorName = pane.entries[pane.selectedIndex]?.name;
+    pane.entries = pane.allEntries.filter(entry => showHiddenEntries || !entry.name.startsWith("."));
+    const available = new Set(pane.entries.map(entry => entry.name));
+    pane.selectedNames = new Set([...selectedNames].filter(name => available.has(name)));
+    pane.selectedIndex = pane.entries.findIndex(entry => entry.name === cursorName);
+    if (pane.selectedIndex < 0) pane.selectedIndex = pane.entries.findIndex(entry => pane.selectedNames.has(entry.name));
+    if (!pane.selectedNames.size && selectFirst && pane.entries.length) {
+      pane.selectedNames.add(pane.entries[0].name);
+      pane.selectedIndex = 0;
+    }
+    pane.selectionAnchor = pane.selectedIndex;
     pane.list.replaceChildren(...pane.entries.map((entry, index) => {
       const button = document.createElement("button");
       button.className = "entry";
-      button.innerHTML = `<span class="entry-icon">${entry.directory ? "📁" : "📄"}</span><span class="entry-name"></span>`;
+      button.innerHTML = `<span class="entry-icon ${entry.directory ? "folder-icon" : "file-icon"}" aria-hidden="true"></span><span class="entry-name"></span>`;
       button.querySelector(".entry-name").textContent = entry.name;
       updateEntryTimestamp(button, entry, pane.showModified);
-      button.addEventListener("click", () => selectEntry(pane, index, false));
+      setupLongPressSelection(button, pane, index);
+      button.addEventListener("click", event => selectEntry(pane, index, false, event));
       button.addEventListener("dblclick", () => activateSelectedEntry(pane));
       return button;
     }));
-    if (pane.selectedIndex >= 0) selectEntry(pane, pane.selectedIndex, false);
+    updateSelection(pane, false);
   }
 
   window.dirGroup = {
+    receiveDirectories(responses) {
+      responses.forEach(response => window.dirGroup.receiveDirectory(response));
+    },
     receiveDirectory(response) {
       const pane = panes.get(response.paneId);
       if (!pane) return;
+      const measuring = pendingInitialListings?.has(response.paneId);
+      const renderStarted = measuring ? performance.now() : 0;
+      if (measuring) reportStartup("list-receive", { paneId: response.paneId, readyState: document.readyState });
       const preserveInput = document.activeElement === pane.input &&
         (pane.submittingPath === undefined || pane.input.value !== pane.submittingPath);
       pane.submittingPath = undefined;
@@ -544,22 +770,25 @@
         pane.status.textContent = response.error;
         pane.status.className = "status error";
         if (pane === activePane && !preserveInput) focusPane(pane);
+        if (measuring) reportStartup("list-render", { paneId: response.paneId, count: 0, duration: performance.now() - renderStarted });
+        markInitialListingRendered(response.paneId);
         return;
       }
+      const pathChanged = pane.path !== response.path;
       pane.path = response.path;
       pane.allEntries = response.entries;
       pane.truncated = response.truncated;
-      let selectedName;
+      let selectedNames = pathChanged ? new Set() : pane.selectedNames;
       if (pane.pendingSelection) {
         if (response.path === pane.pendingSelection.directory) {
-          selectedName = pane.pendingSelection.name;
+          selectedNames = new Set(pane.pendingSelection.names);
         }
         pane.pendingSelection = null;
       }
-      renderEntries(pane, selectedName, selectedName === undefined && pane.selectInitial);
+      renderEntries(pane, selectedNames, !selectedNames.size && pane.selectInitial);
       pane.selectInitial = true;
       if (!preserveInput) pane.input.value = displayPath(response.path);
-      pane.status.textContent = `${pane.entries.length} 件${response.truncated ? "（取得上限 1,000 件）" : ""} · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3`;
+      pane.status.textContent = defaultStatus(pane);
       pane.status.className = "status";
       if (pane.operationNotice) {
         pane.status.textContent = pane.operationNotice.text;
@@ -567,6 +796,8 @@
         pane.operationNotice = null;
       }
       if (pane === activePane && !preserveInput) focusPane(pane);
+      if (measuring) reportStartup("list-render", { paneId: response.paneId, count: pane.entries.length, duration: performance.now() - renderStarted });
+      markInitialListingRendered(response.paneId);
     },
     receivePathCompletion(response) {
       const pane = panes.get(response.paneId);
@@ -596,8 +827,8 @@
     },
     receiveFileOperation(response) {
       const pane = panes.get(response.paneId);
-      if (pane && response.selectedName && pane.path === response.selectedDirectory) {
-        pane.pendingSelection = { name: response.selectedName, directory: response.selectedDirectory };
+      if (pane && response.selectedNames && pane.path === response.selectedDirectory) {
+        pane.pendingSelection = { names: response.selectedNames, directory: response.selectedDirectory };
       }
       if (pane && response.refresh) pane.operationNotice = { text: response.error || response.message, error: !!response.error };
       if (response.refresh) panes.forEach(item => requestDirectory(item, item.path));
@@ -612,19 +843,39 @@
   layout = splitNode({ pane: initial[0] }, splitNode({ pane: initial[1] }, { pane: initial[2] }, "vertical"), "horizontal");
   renderLayout();
   focusPane(initial[0]);
+  reportStartup("initial-layout");
   document.addEventListener("keydown", handlePaneKeydown, true);
+  viewMenu.addEventListener("toggle", () => {
+    if (viewMenu.open) helpMenu.open = false;
+  });
+  helpMenu.addEventListener("toggle", () => {
+    if (helpMenu.open) viewMenu.open = false;
+  });
+  openShortcutsButton.addEventListener("click", () => {
+    openShortcuts();
+  });
+  closeShortcutsButton.addEventListener("click", closeShortcuts);
   scaleInput.addEventListener("input", () => {
     const percent = Number(scaleInput.value);
     scaleValue.textContent = `${percent}%`;
     window.webkit.messageHandlers.uiScale.postMessage({ percent });
+    saveViewSettings();
   });
-  hiddenFoldersInput.addEventListener("change", () => {
-    showHiddenFolders = hiddenFoldersInput.checked;
+  hiddenEntriesInput.addEventListener("change", () => {
+    showHiddenEntries = hiddenEntriesInput.checked;
     panes.forEach(pane => {
-      const selectedName = pane.entries[pane.selectedIndex]?.name;
-      renderEntries(pane, selectedName);
-      pane.status.textContent = `${pane.entries.length} 件${pane.truncated ? "（取得上限 1,000 件）" : ""} · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3`;
+      renderEntries(pane, pane.selectedNames);
+      pane.status.textContent = defaultStatus(pane);
       pane.status.className = "status";
     });
+    saveViewSettings();
+  });
+  shortcutHintsInput.addEventListener("change", () => {
+    const statusIsDefault = new Map([...panes.values()].map(pane => [pane, pane.status.textContent === defaultStatus(pane)]));
+    showShortcutHints = shortcutHintsInput.checked;
+    panes.forEach(pane => {
+      if (statusIsDefault.get(pane)) pane.status.textContent = defaultStatus(pane);
+    });
+    saveViewSettings();
   });
 })();

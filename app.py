@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+from time import perf_counter
+
+_IMPORT_START = perf_counter()
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,34 +18,124 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
+gi.require_version("JavaScriptCore", "4.1")
 gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import GdkPixbuf, Gio, GLib, Gtk, WebKit2  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, JavaScriptCore, WebKit2  # noqa: E402
 
 import file_operations  # noqa: E402
 import path_completion  # noqa: E402
 
+_IMPORT_END = perf_counter()
+
+
+class StartupTiming:
+    """Optional elapsed times from Python entry; each milestone is recorded once."""
+
+    def __init__(self, start: float, enabled: bool, summary: bool = False) -> None:
+        self.start = start
+        self.enabled = enabled
+        self.summary = summary
+        self.seen = set()
+
+    def mark(self, name: str, description: str, timestamp: float | None = None) -> None:
+        if not self.enabled or name in self.seen or (self.summary and name != "T6"):
+            return
+        self.seen.add(name)
+        elapsed = ((perf_counter() if timestamp is None else timestamp) - self.start) * 1000
+        print(f"起動計測 {name}: {elapsed:.1f} ms  {description}", file=sys.stderr, flush=True)
+
+    def detail(self, description: str, timestamp: float | None = None) -> None:
+        if self.enabled and not self.summary:
+            elapsed = ((perf_counter() if timestamp is None else timestamp) - self.start) * 1000
+            print(f"起動詳細 +{elapsed:.1f} ms  {description}", file=sys.stderr, flush=True)
+
+
+STARTUP_TIMING = StartupTiming(
+    getattr(sys.modules.get("__main__"), "DPANE_PROCESS_START", _IMPORT_START),
+    os.environ.get("DPANE_STARTUP_TIMING") == "1",
+    os.environ.get("DPANE_STARTUP_COMPARE") == "1",
+)
+STARTUP_TIMING.mark("T0", "Pythonエントリーポイント", STARTUP_TIMING.start)
+STARTUP_TIMING.mark("T1", "import完了", _IMPORT_END)
+
 
 APP_DIR = Path(__file__).resolve().parent
 UI_FILE = APP_DIR / "ui" / "index.html"
-ICON_FILE = APP_DIR / "icon" / "4つのフォルダー入りアイコン.png"
-ICON_ZOOM = 1.3
+MINIMAL_UI_FILE = APP_DIR / "ui" / "startup-minimal.html"
+_inline_ui_file = None
+ICON_FILES = tuple(APP_DIR / "icon" / f"window-{size}.png" for size in (16, 32, 48, 64, 128))
 MAX_ENTRIES = 1_000
+DEFAULT_VIEW_SETTINGS = {"scale": 100, "showHiddenEntries": True, "showShortcutHints": True}
+
+
+def startup_ui_file() -> Path:
+    if _inline_ui_file is not None:
+        return _inline_ui_file
+    if STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and os.environ.get("DPANE_STARTUP_MINIMAL") == "1":
+        return MINIMAL_UI_FILE
+    return UI_FILE
+
+
+def create_inline_ui(directory: Path) -> Path:
+    html = UI_FILE.read_text(encoding="utf-8")
+    css = (UI_FILE.parent / "style.css").read_text(encoding="utf-8")
+    js = (UI_FILE.parent / "app.js").read_text(encoding="utf-8")
+    css_tag = '<link rel="stylesheet" href="style.css">'
+    js_tag = '<script src="app.js"></script>'
+    if html.count(css_tag) != 1 or html.count(js_tag) != 1 or "</style" in css.lower() or "</script" in js.lower():
+        raise ValueError("インライン比較用HTMLを安全に作成できません。")
+    html = html.replace(css_tag, f"<style>\n{css}\n</style>", 1)
+    html = html.replace(js_tag, f"<script>\n{js}\n</script>", 1)
+    target = directory / "startup-inline.html"
+    target.write_text(html, encoding="utf-8")
+    return target
+
+
+def validate_view_settings(value: object) -> dict[str, object]:
+    settings = DEFAULT_VIEW_SETTINGS.copy()
+    if not isinstance(value, dict):
+        return settings
+    scale = value.get("scale")
+    if type(scale) is int and 70 <= scale <= 150 and scale % 10 == 0:
+        settings["scale"] = scale
+    for key in ("showHiddenEntries", "showShortcutHints"):
+        if type(value.get(key)) is bool:
+            settings[key] = value[key]
+    return settings
+
+
+def settings_path() -> Path:
+    return Path(GLib.get_user_config_dir()) / "dpane" / "settings.json"
+
+
+def load_view_settings(path: Path) -> dict[str, object]:
+    try:
+        return validate_view_settings(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, UnicodeError):
+        return DEFAULT_VIEW_SETTINGS.copy()
+
+
+def save_view_settings(path: Path, settings: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".settings-", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(validate_view_settings(settings), stream, ensure_ascii=False)
+            stream.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def apply_window_icon(window: Gtk.Window) -> None:
-    """Reduce horizontal margins to enlarge the artwork without distortion."""
+    """Load pre-sized window icons without processing the original artwork."""
     try:
-        source = GdkPixbuf.Pixbuf.new_from_file(str(ICON_FILE))
-        width, height = source.get_width(), source.get_height()
-        cropped_width = min(width, max(height, round(width / ICON_ZOOM)))
-        artwork = source.new_subpixbuf((width - cropped_width) // 2, 0, cropped_width, height)
-        icons = []
-        for size in (16, 32, 48, 64, 128):
-            scale = size / max(cropped_width, height)
-            icons.append(artwork.scale_simple(max(1, round(cropped_width * scale)),
-                                             max(1, round(height * scale)), GdkPixbuf.InterpType.BILINEAR))
-        window.set_icon_list(icons)
+        window.set_icon_list([GdkPixbuf.Pixbuf.new_from_file(str(path)) for path in ICON_FILES])
     except GLib.Error as error:
         print(f"ウィンドウアイコンを読み込めません: {error}", file=sys.stderr)
 
@@ -138,17 +232,61 @@ def is_executable_binary(path: Path) -> bool:
     return byte_order is not None and int.from_bytes(header[16:18], byte_order) in (2, 3)
 
 
+def selected_entries(value: object) -> list[tuple[Path, tuple[int, int, int]]]:
+    """Validate an unbounded, non-empty selection without trusting UI paths."""
+    if not isinstance(value, list) or not value:
+        raise ValueError("操作する項目を選択してください。")
+    entries = []
+    seen = set()
+    for item in value:
+        path = file_operations.entry_path(item)
+        if path in seen:
+            raise ValueError("同じ項目が重複しています。")
+        seen.add(path)
+        entries.append((path, file_operations.identity(path)))
+    return entries
+
+
 class DirGroupWindow(Gtk.ApplicationWindow):
     def __init__(self, application: Gtk.Application) -> None:
         super().__init__(application=application, title="Dpaie")
+        self.ui_file = startup_ui_file()
+        self.startup_reply = (STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and self.ui_file == UI_FILE
+                              and os.environ.get("DPANE_STARTUP_REPLY") == "1")
+        self.startup_batch = (STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and self.ui_file == UI_FILE
+                              and not self.startup_reply and os.environ.get("DPANE_STARTUP_BATCH") == "1")
+        self.startup_page_loaded = False
+        self.startup_responses = []
+        if STARTUP_TIMING.enabled and not STARTUP_TIMING.summary:
+            print(f"起動計測 HTML: {'最小' if self.ui_file == MINIMAL_UI_FILE else '通常'} (load_uri)",
+                  file=sys.stderr, flush=True)
+            if self.ui_file == UI_FILE:
+                mode = "応答付きメッセージ" if self.startup_reply else ("読み込み完了後に一括" if self.startup_batch else "取得ごと")
+                print(f"起動計測 一覧送信: {mode}",
+                      file=sys.stderr, flush=True)
         self.set_default_size(1200, 760)
         apply_window_icon(self)
         self.file_clipboard = None
         self.file_operation_busy = False
         self.completion_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="path-completion")
+        self.initial_listing_ids = set()
+        self.startup_script_traced = set()
         self.connect("delete-event", self.on_window_delete)
 
         manager = WebKit2.UserContentManager()
+        if self.startup_reply:
+            if not manager.register_script_message_handler_with_reply("initialDirectoryReply", None):
+                raise RuntimeError("応答付きメッセージを登録できません。")
+            manager.connect("script-message-with-reply-received::initialDirectoryReply", self.on_initial_directory_reply)
+        view_settings = load_view_settings(settings_path())
+        manager.add_script(WebKit2.UserScript.new(
+            "window.dpaneInitialViewSettings = " + json.dumps(view_settings) + ";"
+            + ("window.dpaneStartupTiming = true;" if STARTUP_TIMING.enabled else "")
+            + ("window.dpaneStartupSummary = true;" if STARTUP_TIMING.enabled and STARTUP_TIMING.summary else "")
+            + ("window.dpaneStartupReply = true;" if self.startup_reply else ""),
+            WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START, None, None,
+        ))
         manager.register_script_message_handler("directoryListing")
         manager.connect("script-message-received::directoryListing", self.on_directory_request)
         manager.register_script_message_handler("fileOpen")
@@ -163,34 +301,168 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         manager.connect("script-message-received::pathCompletion", self.on_path_completion_request)
         manager.register_script_message_handler("uiScale")
         manager.connect("script-message-received::uiScale", self.on_ui_scale_request)
+        manager.register_script_message_handler("saveViewSettings")
+        manager.connect("script-message-received::saveViewSettings", self.on_save_view_settings)
+        if STARTUP_TIMING.enabled:
+            manager.register_script_message_handler("startupPaint")
+            manager.connect("script-message-received::startupPaint", self.on_startup_paint)
+            manager.register_script_message_handler("startupDetail")
+            manager.connect("script-message-received::startupDetail", self.on_startup_detail)
 
         self.web_view = WebKit2.WebView.new_with_user_content_manager(manager)
+        STARTUP_TIMING.mark("T3", "WebView生成完了")
+        background = Gdk.RGBA()
+        background.parse("#171a20")
+        self.web_view.set_background_color(background)
+        self.web_view.set_zoom_level(view_settings["scale"] / 100)
         settings = self.web_view.get_settings()
         settings.set_enable_developer_extras(True)
         settings.set_enable_write_console_messages_to_stdout(True)
         self.web_view.connect("decide-policy", self.on_decide_policy)
+        if STARTUP_TIMING.enabled:
+            self.web_view.connect("load-changed", self.on_startup_load_changed)
         self.add(self.web_view)
-        self.web_view.load_uri(UI_FILE.as_uri())
+        self.web_view.load_uri(self.ui_file.as_uri())
 
     def on_decide_policy(self, _view, decision, decision_type) -> bool:
         """Keep the embedded UI local; it must not navigate to remote pages."""
         if decision_type != WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
             return False
         request_uri = decision.get_request().get_uri()
-        if request_uri == UI_FILE.as_uri():
+        if request_uri == self.ui_file.as_uri():
             return False
         decision.ignore()
         return True
 
-    def on_directory_request(self, _manager, result) -> None:
+    def on_directory_request(self, _manager, result, reply=None) -> None:
+        initial = False
         try:
-            request = json.loads(result.get_js_value().to_json(0))
+            value = result if reply is not None else result.get_js_value()
+            request = json.loads(value.to_json(0))
             pane_id = request.get("paneId")
+            initial = STARTUP_TIMING.enabled and pane_id in ("1", "2", "3") and pane_id not in self.initial_listing_ids
+            started = perf_counter() if initial else None
+            if initial:
+                STARTUP_TIMING.detail(f"一覧 ペイン{pane_id} 取得開始", started)
             response = {"paneId": pane_id, **list_directory(request.get("path"))}
+            if initial:
+                finished = perf_counter()
+                count = len(response.get("entries", []))
+                status = "エラー" if "error" in response else f"{count}件"
+                STARTUP_TIMING.detail(f"一覧 ペイン{pane_id} 取得終了 {status} 所要{(finished - started) * 1000:.1f} ms", finished)
+            if STARTUP_TIMING.enabled and pane_id in ("1", "2", "3"):
+                self.initial_listing_ids.add(pane_id)
+                if len(self.initial_listing_ids) == 3:
+                    STARTUP_TIMING.mark("T5", "初期3ペインの一覧取得終了（エラー含む）")
         except (TypeError, ValueError, AttributeError) as error:
+            if reply is not None:
+                reply.return_error_message(f"要求を解釈できません: {error}")
+                return
             response = {"error": f"要求を解釈できません: {error}"}
 
+        if reply is not None:
+            reply.return_value(JavaScriptCore.Value.new_from_json(value.get_context(), json.dumps(response, ensure_ascii=False)))
+            return
+        if initial and getattr(self, "startup_batch", False) is True:
+            self.startup_responses.append(response)
+            self.flush_initial_listings()
+            return
         self.send_to_ui("receiveDirectory", response)
+
+    def on_initial_directory_reply(self, manager, value, reply) -> bool:
+        self.on_directory_request(manager, value, reply)
+        return True
+
+    def flush_initial_listings(self) -> None:
+        if not self.startup_page_loaded or len(self.startup_responses) != 3:
+            return
+        responses, self.startup_responses = self.startup_responses, []
+        STARTUP_TIMING.detail("初期3ペインの一覧を一括送信")
+        self.send_to_ui("receiveDirectories", responses)
+
+    def on_startup_load_changed(self, _view, event) -> None:
+        labels = {
+            WebKit2.LoadEvent.STARTED: "WebKit 読み込み開始",
+            WebKit2.LoadEvent.REDIRECTED: "WebKit リダイレクト",
+            WebKit2.LoadEvent.COMMITTED: "WebKit 読み込み確定（表示内容を受信）",
+            WebKit2.LoadEvent.FINISHED: "WebKit 読み込み終了",
+        }
+        if event in labels:
+            STARTUP_TIMING.detail(labels[event])
+        if event == WebKit2.LoadEvent.FINISHED:
+            STARTUP_TIMING.mark("T4", "HTML読み込み完了")
+            if self.startup_batch:
+                self.startup_page_loaded = True
+                self.flush_initial_listings()
+
+    def on_startup_paint(self, _manager, _result) -> None:
+        STARTUP_TIMING.mark("T6", "初期一覧反映後の2描画フレーム（描画完了の近似）")
+
+    def on_startup_detail(self, _manager, result) -> None:
+        try:
+            data = json.loads(result.get_js_value().to_json(0))
+            event = data.get("event")
+            elapsed = data.get("elapsed")
+            if event not in ("js-start", "initial-layout", "list-render", "list-receive", "dom-content-loaded", "window-load", "dom-already", "load-already", "performance-unavailable", "navigation-unavailable", "resource-summary", "resource", "navigation") or type(elapsed) not in (int, float):
+                return
+            if not 0 <= elapsed <= 3600000:
+                return
+            if STARTUP_TIMING.summary:
+                if event in ("dom-content-loaded", "window-load", "dom-already", "load-already"):
+                    label = {"dom-content-loaded": "DOMContentLoaded", "window-load": "window.onload",
+                             "dom-already": "DOMContentLoaded（すでに発生）", "load-already": "window.onload（すでに発生）"}[event]
+                    received = (perf_counter() - STARTUP_TIMING.start) * 1000
+                    print(f"起動計測 {label}: JS開始から {elapsed:.1f} ms（Python受信 T0+{received:.1f} ms）", file=sys.stderr, flush=True)
+                return
+            def time_value(value):
+                if value is None:
+                    return "取得不可"
+                if type(value) not in (int, float) or not -3600000 <= value <= 3600000:
+                    raise ValueError("計測値が不正です")
+                return f"{value:+.1f}ms"
+            if event == "js-start":
+                description = "JS 実行開始"
+            elif event == "initial-layout":
+                description = f"JS 初期ペイン・レイアウト構築完了 所要{elapsed:.1f} ms"
+            elif event in ("dom-content-loaded", "window-load", "dom-already", "load-already"):
+                description = {
+                    "dom-content-loaded": "JS DOMContentLoaded発生",
+                    "window-load": "JS window.onload発生",
+                    "dom-already": "JS 開始時点でDOMContentLoaded後（発生時刻不明）",
+                    "load-already": "JS 開始時点でwindow.onload後（発生時刻不明）",
+                }[event]
+            elif event == "list-receive":
+                pane_id, ready = data.get("paneId"), data.get("readyState")
+                if pane_id not in ("1", "2", "3") or ready not in ("loading", "interactive", "complete"):
+                    return
+                description = f"JS ペイン{pane_id} 一覧受信開始 readyState={ready}"
+            elif event in ("performance-unavailable", "navigation-unavailable"):
+                description = "JS " + ("Performance APIが利用不可" if event == "performance-unavailable" else "ナビゲーション時刻が取得不可")
+            elif event == "resource-summary":
+                count = data.get("count")
+                if type(count) is not int or not 0 <= count <= 100000:
+                    return
+                description = f"JS リソース計測 {count}件（最大30件表示）"
+            elif event == "resource":
+                kind, duration = data.get("kind"), data.get("duration")
+                if kind not in ("style.css", "app.js", "other") or type(duration) not in (int, float) or not 0 <= duration <= 3600000:
+                    return
+                description = (f"JS リソース {kind} 開始={time_value(data.get('start'))} "
+                               f"応答終了={time_value(data.get('end'))} 所要={duration:.1f}ms（時刻はJS開始基準）")
+            elif event == "navigation":
+                description = (f"JS ナビゲーション DOM開始={time_value(data.get('domStart'))} "
+                               f"DOM終了={time_value(data.get('domEnd'))} load開始={time_value(data.get('loadStart'))} "
+                               f"load終了={time_value(data.get('loadEnd'))}（時刻はJS開始基準）")
+            else:
+                pane_id, count, duration = data.get("paneId"), data.get("count"), data.get("duration")
+                if pane_id not in ("1", "2", "3") or type(count) is not int or not 0 <= count <= MAX_ENTRIES:
+                    return
+                if type(duration) not in (int, float) or not 0 <= duration <= 3600000:
+                    return
+                description = f"JS ペイン{pane_id} 一覧反映 {count}件 所要{duration:.1f} ms"
+            STARTUP_TIMING.detail(f"{description}（JS開始から{elapsed:.1f} ms、Python受信時刻）")
+        except (TypeError, ValueError, AttributeError):
+            return
 
     def on_ui_scale_request(self, _manager, result) -> None:
         try:
@@ -200,6 +472,13 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 self.web_view.set_zoom_level(percent / 100)
         except (TypeError, ValueError, AttributeError):
             return
+
+    def on_save_view_settings(self, _manager, result) -> None:
+        try:
+            request = json.loads(result.get_js_value().to_json(0))
+            save_view_settings(settings_path(), validate_view_settings(request))
+        except (OSError, TypeError, ValueError, AttributeError) as error:
+            print(f"表示設定を保存できません: {error}", file=sys.stderr)
 
     def on_path_completion_request(self, _manager, result) -> None:
         try:
@@ -353,9 +632,9 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             if self.file_operation_busy:
                 raise ValueError("別のファイル操作が進行中です。")
             if action in ("copy", "cut"):
-                path = file_operations.entry_path(request.get("path"))
-                self.file_clipboard = (path, action == "cut", file_operations.identity(path))
-                message = "切り取りを予約しました" if action == "cut" else "コピーを準備しました"
+                entries = selected_entries(request.get("paths"))
+                self.file_clipboard = (entries, action == "cut")
+                message = f"{'切り取りを予約しました' if action == 'cut' else 'コピーを準備しました'}: {len(entries)} 件"
                 self.send_to_ui("receiveFileOperation", {"paneId": pane_id, "message": message})
                 return
             if action in ("new_folder", "new_file"):
@@ -382,8 +661,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 job = lambda: file_operations.create_entry(destination, name, is_folder)
                 message = f"{title}を作成しました: {name}"
             elif action == "rename":
-                path = file_operations.entry_path(request.get("path"))
-                expected = file_operations.identity(path)
+                [(path, expected)] = selected_entries(request.get("paths"))
                 dialog = Gtk.Dialog(title="名前を変更", transient_for=self, modal=True)
                 dialog.add_buttons("キャンセル", Gtk.ResponseType.CANCEL, "変更", Gtk.ResponseType.OK)
                 dialog.set_default_response(Gtk.ResponseType.OK)
@@ -403,13 +681,16 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                     self.send_to_ui("receiveFileOperation", {"paneId": pane_id, "message": "操作をキャンセルしました。"})
                     return
                 job = lambda: file_operations.rename_entry(path, name, expected)
+                renamed_source, renamed_identity = path, expected
                 message = f"名前を変更しました: {name}" if name != path.name else "名前は変更されませんでした。"
             elif action == "trash":
-                path = file_operations.entry_path(request.get("path"))
-                expected = file_operations.identity(path)
+                entries = selected_entries(request.get("paths"))
                 dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-                                           buttons=Gtk.ButtonsType.NONE, text="ゴミ箱へ移動しますか？")
-                dialog.format_secondary_text(str(path))
+                                           buttons=Gtk.ButtonsType.NONE, text=f"{len(entries)} 件をゴミ箱へ移動しますか？")
+                preview = "\n".join(str(path) for path, _expected in entries[:10])
+                if len(entries) > 10:
+                    preview += f"\n…ほか {len(entries) - 10} 件"
+                dialog.format_secondary_text(preview)
                 dialog.add_buttons("キャンセル", Gtk.ResponseType.CANCEL, "ゴミ箱へ移動", Gtk.ResponseType.OK)
                 dialog.set_default_response(Gtk.ResponseType.CANCEL)
                 try:
@@ -419,49 +700,65 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 if not confirmed:
                     self.send_to_ui("receiveFileOperation", {"paneId": pane_id, "message": "操作をキャンセルしました。"})
                     return
-                job = lambda: file_operations.trash(path, expected)
-                message = "ゴミ箱へ移動しました。"
+                def job():
+                    completed, failures = [], []
+                    for path, expected in entries:
+                        try:
+                            file_operations.trash(path, expected)
+                            completed.append(path)
+                        except Exception as error:
+                            failures.append((path, error))
+                    return completed, failures
+                message = f"ゴミ箱へ移動しました: {len(entries)} 件"
             elif action == "paste":
                 if self.file_clipboard is None:
                     raise ValueError("コピーまたは切り取りの対象がありません。")
-                path, cut, expected = self.file_clipboard
+                entries, cut = self.file_clipboard
                 destination = request.get("path")
-                if file_operations.identity(path) != expected:
-                    raise ValueError("コピー元が変更されました。もう一度選択してください。")
-                target = file_operations.paste_target(path, destination)
-                if cut and path == target:
-                    raise ValueError("同じフォルダには移動できません。")
-                mode = "reject"
-                target_snapshot = None
-                source_snapshot = None
-                if os.path.lexists(target):
-                    overwrite_allowed = file_operations.can_overwrite(path, target)
-                    target_snapshot = file_operations.file_snapshot(target)
-                    source_snapshot = file_operations.file_snapshot(path)
-                    dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-                                               buttons=Gtk.ButtonsType.NONE, text="同じ名前の項目があります。")
-                    detail = f"{target}\n連番を付けるか、操作をキャンセルできます。"
-                    if overwrite_allowed:
-                        detail += "\n上書きすると既存ファイルが置き換わります（元に戻せません）。"
-                    dialog.format_secondary_text(detail)
-                    dialog.add_button("キャンセル", Gtk.ResponseType.CANCEL)
-                    dialog.add_button("連番を付ける", Gtk.ResponseType.ACCEPT)
-                    if overwrite_allowed:
-                        dialog.add_button("上書き", Gtk.ResponseType.YES)
-                    dialog.set_default_response(Gtk.ResponseType.CANCEL)
-                    try:
-                        choice = dialog.run()
-                    finally:
-                        dialog.destroy()
-                    if choice == Gtk.ResponseType.ACCEPT:
-                        mode = "numbered"
-                    elif choice == Gtk.ResponseType.YES and overwrite_allowed:
-                        mode = "overwrite"
-                    else:
-                        self.send_to_ui("receiveFileOperation", {"paneId": pane_id, "message": "操作をキャンセルしました。"})
-                        return
-                job = lambda: file_operations.transfer(path, destination, cut, expected, mode, target_snapshot, source_snapshot)
-                message = "移動しました。" if cut else "コピーしました。"
+                plans = []
+                for path, expected in entries:
+                    if file_operations.identity(path) != expected:
+                        raise ValueError("コピー元が変更されました。もう一度選択してください。")
+                    target = file_operations.paste_target(path, destination)
+                    if cut and path == target:
+                        raise ValueError("同じフォルダには移動できません。")
+                    mode, target_snapshot, source_snapshot = "reject", None, None
+                    if os.path.lexists(target):
+                        overwrite_allowed = file_operations.can_overwrite(path, target)
+                        target_snapshot = file_operations.file_snapshot(target)
+                        source_snapshot = file_operations.file_snapshot(path)
+                        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                                   buttons=Gtk.ButtonsType.NONE, text="同じ名前の項目があります。")
+                        detail = f"{target}\n連番を付けるか、操作をキャンセルできます。"
+                        if overwrite_allowed:
+                            detail += "\n上書きすると既存ファイルが置き換わります（元に戻せません）。"
+                        dialog.format_secondary_text(detail)
+                        dialog.add_button("キャンセル", Gtk.ResponseType.CANCEL)
+                        dialog.add_button("連番を付ける", Gtk.ResponseType.ACCEPT)
+                        if overwrite_allowed:
+                            dialog.add_button("上書き", Gtk.ResponseType.YES)
+                        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+                        try:
+                            choice = dialog.run()
+                        finally:
+                            dialog.destroy()
+                        if choice == Gtk.ResponseType.ACCEPT:
+                            mode = "numbered"
+                        elif choice == Gtk.ResponseType.YES and overwrite_allowed:
+                            mode = "overwrite"
+                        else:
+                            self.send_to_ui("receiveFileOperation", {"paneId": pane_id, "message": "操作をキャンセルしました。"})
+                            return
+                    plans.append((path, expected, mode, target_snapshot, source_snapshot))
+                def job():
+                    completed, failures = [], []
+                    for path, expected, mode, target_snapshot, source_snapshot in plans:
+                        try:
+                            completed.append(file_operations.transfer(path, destination, cut, expected, mode, target_snapshot, source_snapshot))
+                        except Exception as error:
+                            failures.append((path, error))
+                    return completed, failures
+                message = f"{'移動' if cut else 'コピー'}しました: {len(plans)} 件"
             else:
                 raise ValueError("不明なファイル操作です。")
             self.file_operation_busy = True
@@ -470,15 +767,27 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                     result = job()
                     response = {"paneId": pane_id, "message": message, "refresh": True}
                     if action == "paste":
-                        response["message"] = f"{'移動' if cut else 'コピー'}しました: {result.name}"
-                    if action == "paste" and cut:
-                        self.file_clipboard = None
+                        completed, failures = result
+                        response["message"] = f"{'移動' if cut else 'コピー'}しました: {len(completed)} 件"
+                        if failures:
+                            names = ", ".join(path.name for path, _error in failures[:3])
+                            response["error"] = f"{len(completed)} 件成功、{len(failures)} 件の操作に失敗しました: {names}"
+                        if cut:
+                            remaining = [(path, expected) for path, expected, _mode, _target, _source in plans
+                                         if all(path != done for done in completed)]
+                            self.file_clipboard = (remaining, True) if remaining else None
+                    if action == "trash":
+                        completed, failures = result
+                        response["message"] = f"ゴミ箱へ移動しました: {len(completed)} 件"
+                        if failures:
+                            names = ", ".join(path.name for path, _error in failures[:3])
+                            response["error"] = f"{len(completed)} 件成功、{len(failures)} 件の操作に失敗しました: {names}"
                     if action == "rename":
-                        response.update({"selectedName": result.name, "selectedDirectory": str(result.parent)})
+                        response.update({"selectedNames": [result.name], "selectedDirectory": str(result.parent)})
                         if self.file_clipboard is not None:
-                            old_path, is_cut, old_identity = self.file_clipboard
-                            if old_path == path and old_identity == expected:
-                                self.file_clipboard = (result, is_cut, expected)
+                            entries, is_cut = self.file_clipboard
+                            self.file_clipboard = ([(result if old_path == renamed_source and old_identity == renamed_identity else old_path,
+                                                     old_identity) for old_path, old_identity in entries], is_cut)
                 except Exception as error:
                     response = {"paneId": pane_id, "error": f"ファイル操作に失敗しました: {error}", "refresh": True}
                 GLib.idle_add(self.finish_file_operation, response)
@@ -491,8 +800,30 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         self.send_to_ui("receiveFileOperation", response)
         return False
 
-    def send_to_ui(self, callback: str, response: dict[str, object]) -> None:
+    def send_to_ui(self, callback: str, response: object) -> None:
         payload = json.dumps(response, ensure_ascii=False).replace("</", "<\\/")
+        trace = None
+        if STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and callback == "receiveDirectory" and isinstance(response, dict):
+            pane_id = response.get("paneId")
+            if pane_id in ("1", "2", "3") and pane_id not in self.startup_script_traced:
+                self.startup_script_traced.add(pane_id)
+                trace = f"ペイン{pane_id}"
+        elif STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and callback == "receiveDirectories" and "batch" not in self.startup_script_traced:
+            self.startup_script_traced.add("batch")
+            trace = "初期一覧一括"
+        if trace:
+            submitted = perf_counter()
+            STARTUP_TIMING.detail(f"Python→JS {trace} run_javascript要求", submitted)
+            def finished(view, result, _data):
+                try:
+                    view.run_javascript_finish(result)
+                    status = "完了"
+                except GLib.Error:
+                    status = "エラー"
+                completed = perf_counter()
+                STARTUP_TIMING.detail(f"Python→JS {trace} run_javascript {status} 要求から{(completed - submitted) * 1000:.1f} ms", completed)
+            self.web_view.run_javascript(f"window.dirGroup.{callback}({payload});", None, finished, None)
+            return
         self.web_view.run_javascript(
             f"window.dirGroup.{callback}({payload});", None, None, None
         )
@@ -501,6 +832,10 @@ class DirGroupWindow(Gtk.ApplicationWindow):
 class DirGroupApplication(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(application_id="local.dirgroup.webui")
+
+    def do_startup(self) -> None:
+        Gtk.Application.do_startup(self)
+        STARTUP_TIMING.mark("T2", "GTKアプリケーションstartup完了")
 
     def do_activate(self) -> None:
         window = self.props.active_window
@@ -511,8 +846,18 @@ class DirGroupApplication(Gtk.Application):
 
 
 def main() -> int:
-    if not UI_FILE.is_file():
-        sys.exit(f"UI file is missing: {UI_FILE}")
+    global _inline_ui_file
+    if STARTUP_TIMING.enabled and STARTUP_TIMING.summary and os.environ.get("DPANE_STARTUP_INLINE") == "1":
+        with tempfile.TemporaryDirectory(prefix="dpane-inline-") as directory:
+            _inline_ui_file = create_inline_ui(Path(directory))
+            try:
+                GLib.set_application_name("Dpaie")
+                return DirGroupApplication().run(sys.argv)
+            finally:
+                _inline_ui_file = None
+    ui_file = startup_ui_file()
+    if not ui_file.is_file():
+        sys.exit(f"UI file is missing: {ui_file}")
     GLib.set_application_name("Dpaie")
     return DirGroupApplication().run(sys.argv)
 

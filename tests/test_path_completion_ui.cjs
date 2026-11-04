@@ -24,11 +24,14 @@ class Element {
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(item => item !== this); }
   addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }
   setAttribute(name, value) { this.attributes[name] = value; }
+  setPointerCapture(pointerId) { this.pointerId = pointerId; }
+  hasPointerCapture(pointerId) { return this.pointerId === pointerId; }
+  releasePointerCapture(pointerId) { if (this.pointerId === pointerId) this.pointerId = null; }
   focus() { document.activeElement = this; }
   scrollIntoView() {}
   getBoundingClientRect() { return { left: 0, bottom: 20, width: 200 }; }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
-  closest(selector) { let node = this; while (node) { if (selector === "#workspace" && node === workspace) return node; node = node.parent; } return null; }
+  closest(selector) { let node = this; while (node) { if (selector === "#workspace" && node === workspace) return node; if (selector === ".entry" && node.className === "entry") return node; node = node.parent; } return null; }
   fire(name, props = {}) {
     const event = { target: this, key: "", preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; }, ...props };
     for (const fn of this.events[name] || []) { fn(event); if (event.stopped) break; }
@@ -37,16 +40,19 @@ class Element {
 }
 
 const workspace = new Element("main");
-const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-folders": new Element(), ".view-menu": new Element() };
-ids["#show-hidden-folders"].checked = true;
-const document = { body: new Element("body"), activeElement: null, events: {}, querySelector: id => ids[id], createElement: tag => new Element(tag), addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
-const calls = [], directoryCalls = [], closeCalls = [], scaleCalls = [], operationCalls = [];
-const window = { innerWidth: 1200, innerHeight: 800, webkit: { messageHandlers: { directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) } } } };
+const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-entries": new Element(), "#show-shortcut-hints": new Element(), ".view-menu": new Element(), ".help-menu": new Element(), "#shortcut-page": new Element(), "#open-shortcuts": new Element(), "#close-shortcuts": new Element() };
+ids["#show-hidden-entries"].checked = true;
+ids["#show-shortcut-hints"].checked = true;
+ids["#ui-scale"].value = "100";
+ids["#shortcut-page"].hidden = true;
+const document = { body: new Element("body"), activeElement: null, events: {}, readyState: "loading", pointTarget: null, querySelector: id => ids[id], createElement: tag => new Element(tag), elementFromPoint() { return this.pointTarget; }, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
+const calls = [], directoryCalls = [], closeCalls = [], scaleCalls = [], operationCalls = [], settingsCalls = [], paintCalls = [], detailCalls = [];
+const window = { innerWidth: 1200, innerHeight: 800, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }, webkit: { messageHandlers: { directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, saveViewSettings: { postMessage: value => settingsCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) }, startupPaint: { postMessage: value => paintCalls.push(value) }, startupDetail: { postMessage: value => detailCalls.push(value) } } } };
 const timers = new Map(); let nextTimer = 0;
 const setTimeout = fn => { const id = ++nextTimer; timers.set(id, fn); return id; };
 const clearTimeout = id => timers.delete(id);
 const flush = () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(fn => fn()); };
-vm.runInNewContext(fs.readFileSync(process.argv[2], "utf8"), { window, document, setTimeout, clearTimeout, requestAnimationFrame: fn => fn() });
+vm.runInNewContext(fs.readFileSync(process.argv[2], "utf8"), { window, document, performance, setTimeout, clearTimeout, requestAnimationFrame: fn => fn() });
 const find = (node, predicate) => [ ...(predicate(node) ? [node] : []), ...node.children.flatMap(child => find(child, predicate)) ];
 const pane = find(workspace, node => node.className === "pane")[0];
 const input = pane.querySelector(".path");
@@ -109,6 +115,29 @@ ids["#ui-scale"].value = "130";
 ids["#ui-scale"].fire("input");
 assert.equal(scaleCalls.at(-1).percent, 130);
 assert.equal(ids["#ui-scale-value"].textContent, "130%");
+assert.equal(settingsCalls.at(-1).scale, 130);
+
+ids["#open-shortcuts"].fire("click");
+assert(!ids["#shortcut-page"].hidden);
+ids["#close-shortcuts"].fire("click");
+assert(ids["#shortcut-page"].hidden);
+const openShortcut = { target: input, key: "k", ctrlKey: true, shiftKey: false, altKey: false, metaKey: false,
+  preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(openShortcut);
+assert(openShortcut.prevented);
+assert(!ids["#shortcut-page"].hidden);
+const closeShortcut = { target: ids["#close-shortcuts"], key: "Escape", preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(closeShortcut);
+assert(closeShortcut.prevented);
+assert(ids["#shortcut-page"].hidden);
+ids[".help-menu"].open = true;
+ids[".view-menu"].open = true;
+ids[".view-menu"].fire("toggle");
+assert(!ids[".help-menu"].open);
+ids[".view-menu"].open = true;
+ids[".help-menu"].open = true;
+ids[".help-menu"].fire("toggle");
+assert(!ids[".view-menu"].open);
 
 window.dirGroup.receiveDirectory({ paneId: "1", path: "/home/test", entries: [
   { name: ".hidden", directory: true, modified: 1700000000 }, { name: ".file", directory: false, modified: null }, { name: "visible", directory: true, modified: 1700000000 }
@@ -118,6 +147,47 @@ window.dirGroup.receiveDirectory({ paneId: "2", path: "/home/other", entries: [
 ] });
 const secondPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "2")[0];
 assert.equal(pane.querySelector(".entry-list").children.length, 3);
+const entries = pane.querySelector(".entry-list").children;
+document.pointTarget = entries[2];
+entries[0].fire("pointerdown", { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+flush();
+entries[0].fire("pointermove", { pointerId: 1, clientX: 0, clientY: 0 });
+entries[0].fire("pointerup", { pointerId: 1 });
+assert(entries[0].fire("click").prevented); // Releasing a long press must not collapse the range.
+pane.fire("pointerdown");
+const longPressCopy = { target: pane, key: "c", ctrlKey: true, preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(longPressCopy);
+assert.deepEqual(operationCalls.at(-1).paths, ["/home/test/.hidden", "/home/test/.file", "/home/test/visible"]);
+operationCalls.length = 0;
+entries[0].fire("click");
+entries[2].fire("click", { ctrlKey: true });
+entries[1].fire("click", { shiftKey: true });
+pane.fire("pointerdown");
+const copySelection = { target: pane, key: "c", ctrlKey: true, preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(copySelection);
+assert(copySelection.prevented);
+assert.deepEqual(operationCalls.at(-1).paths, ["/home/test/.file", "/home/test/visible"]);
+operationCalls.length = 0;
+entries[1].fire("click");
+entries[2].fire("click", { ctrlKey: true });
+assert.match(pane.querySelector(".status").textContent, /3 件 · 2 件選択 · ↑↓/);
+ids["#show-shortcut-hints"].checked = false;
+ids["#show-shortcut-hints"].fire("change");
+assert.equal(pane.querySelector(".status").textContent, "3 件 · 2 件選択");
+assert.equal(settingsCalls.at(-1).showShortcutHints, false);
+assert.doesNotMatch(secondPane.querySelector(".status").textContent, /Ctrl\+Tab/);
+window.dirGroup.receiveOpenResult({ paneId: "2", error: "テストエラー" });
+entries[0].fire("click");
+assert.equal(pane.querySelector(".status").textContent, "3 件 · 1 件選択");
+ids["#show-shortcut-hints"].checked = true;
+ids["#show-shortcut-hints"].fire("change");
+assert.match(pane.querySelector(".status").textContent, /3 件 · 1 件選択 · ↑↓/);
+assert.equal(secondPane.querySelector(".status").textContent, "テストエラー");
+window.dirGroup.receiveDirectory({ paneId: "2", path: "/home/other", entries: [
+  { name: ".second", directory: true }, { name: ".config", directory: false }
+] });
+assert.match(secondPane.querySelector(".status").textContent, /Ctrl\+Tab/);
+entries[0].fire("click");
 input.focus();
 type("~/editing");
 pane.querySelector(".toggle-times").fire("click");
@@ -146,18 +216,22 @@ window.dirGroup.receiveDirectory({ paneId: "2", path: "/home/other", entries: [
 ] });
 assert.equal(secondPane.querySelector(".toggle-times").attributes["aria-pressed"], "true");
 assert.equal(secondPane.querySelector(".entry-list").children[0].children.length, 1);
-ids["#show-hidden-folders"].checked = false;
-ids["#show-hidden-folders"].fire("change");
-assert.equal(pane.querySelector(".entry-list").children.length, 2);
-assert.equal(secondPane.querySelector(".entry-list").children.length, 1);
+pane.querySelector(".entry-list").children[1].fire("click", { ctrlKey: true });
+ids["#show-hidden-entries"].checked = false;
+ids["#show-hidden-entries"].fire("change");
+assert.equal(settingsCalls.at(-1).showHiddenEntries, false);
+assert.equal(pane.querySelector(".entry-list").children.length, 1);
+assert.equal(pane.querySelector(".entry-list").children[0].querySelector(".entry-name").textContent, "visible");
+assert.equal(secondPane.querySelector(".entry-list").children.length, 0);
 pane.focus();
 const deletion = { target: pane, key: "Delete", preventDefault() { this.prevented = true; } };
 for (const handler of document.events.keydown) handler(deletion);
 assert(deletion.prevented);
-assert.equal(operationCalls.length, 0); // Hidden selected folder must not select a different item.
-ids["#show-hidden-folders"].checked = true;
-ids["#show-hidden-folders"].fire("change");
+assert.equal(operationCalls.length, 0); // Hidden selected files and folders must not remain selected.
+ids["#show-hidden-entries"].checked = true;
+ids["#show-hidden-entries"].fire("change");
 assert.equal(pane.querySelector(".entry-list").children.length, 3);
+assert.equal(secondPane.querySelector(".entry-list").children.length, 2);
 input.focus();
 const switchPane = { target: input, key: "Tab", ctrlKey: true, preventDefault() { this.prevented = true; } };
 for (const handler of document.events.keydown) handler(switchPane);
@@ -186,4 +260,63 @@ const pane2 = find(workspace, node => node.className === "pane" && node.dataset.
 pane2.querySelector(".close-pane").fire("click");
 pane.querySelector(".close-pane").fire("click");
 assert.equal(closeCalls.length, 1);
+window.dpaneInitialViewSettings = { scale: 120, showHiddenEntries: false, showShortcutHints: false };
+window.dpaneStartupTiming = true;
+const perfForTiming = { now: () => performance.now(), getEntriesByType(type) {
+  if (type === "resource") return [{ name: "file:///local/ui/style.css", startTime: 1, responseEnd: 3, duration: 2 }, { name: "file:///private/name", startTime: 2, responseEnd: 4, duration: 2 }];
+  if (type === "navigation") return [{ domContentLoadedEventStart: 5, domContentLoadedEventEnd: 6, loadEventStart: 8, loadEventEnd: 9 }];
+  return [];
+} };
+vm.runInNewContext(fs.readFileSync(process.argv[2], "utf8"), { window, document, performance: perfForTiming, setTimeout, clearTimeout, requestAnimationFrame: fn => fn() });
+assert.equal(ids["#ui-scale"].value, "120");
+assert.equal(ids["#ui-scale-value"].textContent, "120%");
+assert.equal(ids["#show-hidden-entries"].checked, false);
+assert.equal(ids["#show-shortcut-hints"].checked, false);
+document.readyState = "interactive";
+document.events.DOMContentLoaded.forEach(handler => handler());
+document.readyState = "complete";
+window.events.load.forEach(handler => handler());
+window.dirGroup.receiveDirectory({ paneId: "1", path: "/home/test", entries: [
+  { name: ".hidden", directory: false }, { name: "visible", directory: false }
+] });
+const restoredPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "1")[0];
+assert.equal(restoredPane.querySelector(".entry-list").children.length, 1);
+assert.doesNotMatch(restoredPane.querySelector(".status").textContent, /Ctrl\+Tab/);
+assert.equal(paintCalls.length, 0);
+window.dirGroup.receiveDirectories([
+  { paneId: "2", path: "/home/other", entries: [] },
+  { paneId: "3", error: "読み込みエラー" }
+]);
+assert.equal(paintCalls.length, 1);
+assert.deepEqual(detailCalls.map(item => item.event), ["js-start", "initial-layout", "dom-content-loaded", "window-load", "list-receive", "list-render", "list-receive", "list-render", "list-receive", "list-render"]);
+assert.equal(detailCalls[4].readyState, "complete");
+assert.equal(detailCalls[5].paneId, "1");
+assert.equal(detailCalls[5].count, 1);
+assert.equal(detailCalls[9].count, 0);
+window.dirGroup.receiveDirectory({ paneId: "3", path: "/home/other", entries: [] });
+assert.equal(paintCalls.length, 1);
+assert.equal(detailCalls.length, 10);
+flush();
+assert.deepEqual(detailCalls.slice(10).map(item => item.event), ["resource-summary", "resource", "resource", "navigation"]);
+assert.equal(detailCalls[11].kind, "style.css");
+assert.equal(detailCalls[12].kind, "other");
+assert(!JSON.stringify(detailCalls).includes("private"));
+window.dpaneStartupReply = true;
+document.readyState = "loading";
+const replies = [];
+window.webkit.messageHandlers.initialDirectoryReply = { postMessage(request) {
+  const reply = { request };
+  replies.push(reply);
+  return { then(handler) { reply.resolve = handler; return { catch(reject) { reply.reject = reject; } }; } };
+} };
+const detailStart = detailCalls.length;
+vm.runInNewContext(fs.readFileSync(process.argv[2], "utf8"), { window, document, performance: perfForTiming, setTimeout, clearTimeout, requestAnimationFrame: fn => fn() });
+assert.deepEqual(replies.map(reply => reply.request.paneId), ["1", "2", "3"]);
+replies[0].resolve({ paneId: "1", path: "/home/test", entries: [{ name: "visible", directory: false }] });
+const replyPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "1")[0];
+assert.equal(replyPane.querySelector(".entry-list").children.length, 1);
+assert(detailCalls.slice(detailStart).some(item => item.event === "list-receive" && item.readyState === "loading"));
+const beforeNormalRequest = directoryCalls.length;
+replyPane.querySelector(".up").fire("click");
+assert.equal(directoryCalls.length, beforeNormalRequest + 1);
 console.log("Path completion UI checks passed.");

@@ -14,12 +14,58 @@
         <div class="view-menu-panel">
           <label for="ui-scale">画面のスケール <output id="ui-scale-value" for="ui-scale">100%</output></label>
           <input id="ui-scale" type="range" min="70" max="150" step="10" value="100">
-          <label class="view-check"><input id="show-hidden-folders" type="checkbox" checked> 隠しフォルダを表示</label>
+          <label class="view-check"><input id="show-hidden-entries" type="checkbox" checked> 隠しファイル・フォルダを表示</label>
+          <label class="view-check"><input id="show-shortcut-hints" type="checkbox" checked> ショートカット案内を表示</label>
         </div>
+      </details>
+      <details class="help-menu">
+        <summary>ヘルプ</summary>
+        <button id="open-shortcuts" type="button"><span>ショートカット一覧</span><kbd>Ctrl + K</kbd></button>
       </details>
     </nav>
   </header>
   <main id="workspace" aria-label="ファイルペイン"></main>
+  <section id="shortcut-page" class="help-page" role="dialog" aria-modal="true" aria-labelledby="shortcut-page-title" hidden>
+    <div class="help-page-content">
+      <header class="help-page-header">
+        <h1 id="shortcut-page-title">キーボードショートカット</h1>
+        <button id="close-shortcuts" type="button" aria-label="ショートカット一覧を閉じる">×</button>
+      </header>
+      <div class="help-page-body">
+        <p>パス欄以外で使えるショートカットです。</p>
+        <table>
+          <thead><tr><th>キー</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr><td>Ctrl+Shift+L</td><td>アクティブペインの右に追加</td></tr>
+            <tr><td>Ctrl+Shift+J</td><td>アクティブペインの下に追加</td></tr>
+            <tr><td>Ctrl+Shift+W</td><td>アクティブペインを閉じる</td></tr>
+            <tr><td>Ctrl+T</td><td>更新日時を表示 / 非表示</td></tr>
+            <tr><td>Ctrl+K</td><td>ショートカット一覧を開く</td></tr>
+            <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>次 / 前のペインへ移動</td></tr>
+            <tr><td>Alt+1〜Alt+3</td><td>表示順の1〜3番目のペインへ移動</td></tr>
+            <tr><td>Ctrl+Shift+O / Ctrl+Shift+E</td><td>別のアプリで開く / 実行を確認</td></tr>
+            <tr><td>Ctrl+C / Ctrl+X / Ctrl+V</td><td>コピー / 切り取り / 貼り付け</td></tr>
+            <tr><td>Delete</td><td>選択項目をゴミ箱へ移動</td></tr>
+            <tr><td>Shift+↑ / Shift+↓</td><td>選択範囲を拡大 / 縮小</td></tr>
+            <tr><td>F2</td><td>選択項目の名前を変更</td></tr>
+            <tr><td>↑ / ↓</td><td>一覧の項目を選択</td></tr>
+            <tr><td>Enter</td><td>選択項目を開く</td></tr>
+            <tr><td>Backspace</td><td>親フォルダへ移動</td></tr>
+            <tr><td>F5</td><td>現在のフォルダを更新</td></tr>
+          </tbody>
+        </table>
+        <h2>パス欄</h2>
+        <table>
+          <tbody>
+            <tr><td>Tab</td><td>フォルダ候補を補完</td></tr>
+            <tr><td>↑ / ↓</td><td>補完候補を選択</td></tr>
+            <tr><td>Enter</td><td>選択中の候補を反映、または入力パスへ移動</td></tr>
+            <tr><td>Escape</td><td>補完候補を閉じる</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
   <script src="app.js"></script>
 </body>
 </html>

@@ -151,6 +151,43 @@ class FileActionTests(unittest.TestCase):
         create.assert_not_called()
         self.assertIn("キャンセル", window.send_to_ui.call_args.args[1]["message"])
 
+    def test_multiple_copy_reservation_validates_every_selected_path(self):
+        second = Path(self.temp.name) / "second"
+        second.write_text("second")
+        window, request = Mock(), Mock()
+        window.file_operation_busy = False
+        request.get_js_value.return_value.to_json.return_value = json.dumps(
+            {"paneId": "1", "action": "copy", "paths": [str(self.path), str(second)]}
+        )
+        app.DirGroupWindow.on_file_operation_request(window, None, request)
+        entries, cut = window.file_clipboard
+        self.assertFalse(cut)
+        self.assertEqual([path for path, _identity in entries], [self.path, second])
+        self.assertIn("2 件", window.send_to_ui.call_args.args[1]["message"])
+
+    def test_multiple_paste_copies_every_reserved_item(self):
+        class ImmediateThread:
+            def __init__(self, target, daemon):
+                self.target = target
+            def start(self):
+                self.target()
+
+        second = Path(self.temp.name) / "second"
+        destination = Path(self.temp.name) / "destination"
+        second.write_text("second")
+        destination.mkdir()
+        window, request = Mock(), Mock()
+        window.file_operation_busy = False
+        window.file_clipboard = ([(self.path, app.file_operations.identity(self.path)),
+                                 (second, app.file_operations.identity(second))], False)
+        request.get_js_value.return_value.to_json.return_value = json.dumps(
+            {"paneId": "1", "action": "paste", "path": str(destination)}
+        )
+        with patch.object(app.threading, "Thread", ImmediateThread), patch.object(app.GLib, "idle_add"):
+            app.DirGroupWindow.on_file_operation_request(window, None, request)
+        self.assertEqual((destination / self.path.name).read_text(), "test")
+        self.assertEqual((destination / second.name).read_text(), "second")
+
     def test_rename_updates_copy_and_cut_reservations(self):
         class ImmediateThread:
             def __init__(self, target, daemon):
@@ -165,14 +202,14 @@ class FileActionTests(unittest.TestCase):
                 window, dialog, entry, request = Mock(), Mock(), Mock(), Mock()
                 window.file_operation_busy = False
                 expected = app.file_operations.identity(source)
-                window.file_clipboard = (source, cut, expected)
-                request.get_js_value.return_value.to_json.return_value = json.dumps({"paneId": "1", "action": "rename", "path": str(source)})
+                window.file_clipboard = ([(source, expected)], cut)
+                request.get_js_value.return_value.to_json.return_value = json.dumps({"paneId": "1", "action": "rename", "paths": [str(source)]})
                 dialog.run.return_value = app.Gtk.ResponseType.OK
                 entry.get_text.return_value = source.name + "-new"
                 with patch.object(app.Gtk, "Dialog", return_value=dialog), patch.object(app.Gtk, "Entry", return_value=entry), patch.object(app.threading, "Thread", ImmediateThread), patch.object(app.GLib, "idle_add"):
                     app.DirGroupWindow.on_file_operation_request(window, None, request)
                 renamed = source.with_name(source.name + "-new")
-                self.assertEqual(window.file_clipboard, (renamed, cut, expected))
+                self.assertEqual(window.file_clipboard, ([(renamed, expected)], cut))
                 self.assertEqual(renamed.read_text(), "content")
 
     def test_paste_collision_cancel_preserves_cut_reservation(self):
@@ -184,7 +221,7 @@ class FileActionTests(unittest.TestCase):
         target.write_text("target")
         window, dialog, request = Mock(), Mock(), Mock()
         window.file_operation_busy = False
-        window.file_clipboard = (source, True, app.file_operations.identity(source))
+        window.file_clipboard = ([(source, app.file_operations.identity(source))], True)
         request.get_js_value.return_value.to_json.return_value = json.dumps({"paneId": "1", "action": "paste", "path": str(target.parent)})
         dialog.run.return_value = app.Gtk.ResponseType.CANCEL
         with patch.object(app.Gtk, "MessageDialog", return_value=dialog), patch.object(app.file_operations, "transfer") as transfer:
@@ -201,7 +238,7 @@ class FileActionTests(unittest.TestCase):
         target.mkdir(parents=True)
         window, dialog, request = Mock(), Mock(), Mock()
         window.file_operation_busy = False
-        window.file_clipboard = (source, False, app.file_operations.identity(source))
+        window.file_clipboard = ([(source, app.file_operations.identity(source))], False)
         request.get_js_value.return_value.to_json.return_value = json.dumps({"paneId": "1", "action": "paste", "path": str(target.parent)})
         dialog.run.return_value = app.Gtk.ResponseType.CANCEL
         with patch.object(app.Gtk, "MessageDialog", return_value=dialog):

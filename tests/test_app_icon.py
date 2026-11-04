@@ -18,7 +18,7 @@ class AppIconTests(unittest.TestCase):
 
     def test_missing_icon_keeps_application_startable(self):
         window = Mock()
-        with patch.object(app, "ICON_FILE", Path("/nonexistent/dir-group-icon.png")), patch("sys.stderr"):
+        with patch.object(app, "ICON_FILES", (Path("/nonexistent/dir-group-icon.png"),)), patch("sys.stderr"):
             app.apply_window_icon(window)
         window.set_icon_list.assert_not_called()
 

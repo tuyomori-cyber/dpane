@@ -1,5 +1,8 @@
 #!/usr/bin/python3
 """Dpaie command-line entry point."""
+from time import perf_counter
+
+DPANE_PROCESS_START = perf_counter()
 import sys
 
 from app import main
