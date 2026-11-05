@@ -40,10 +40,11 @@ class Element {
 }
 
 const workspace = new Element("main");
-const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-entries": new Element(), "#show-shortcut-hints": new Element(), ".view-menu": new Element(), ".help-menu": new Element(), "#shortcut-page": new Element(), "#open-shortcuts": new Element(), "#close-shortcuts": new Element() };
+const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-entries": new Element(), "#show-shortcut-hints": new Element(), "#startup-pane-count": new Element(), ".view-menu": new Element(), ".help-menu": new Element(), "#shortcut-page": new Element(), "#open-shortcuts": new Element(), "#close-shortcuts": new Element() };
 ids["#show-hidden-entries"].checked = true;
 ids["#show-shortcut-hints"].checked = true;
 ids["#ui-scale"].value = "100";
+ids["#startup-pane-count"].value = "3";
 ids["#shortcut-page"].hidden = true;
 const document = { body: new Element("body"), activeElement: null, events: {}, readyState: "loading", pointTarget: null, querySelector: id => ids[id], createElement: tag => new Element(tag), elementFromPoint() { return this.pointTarget; }, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
 const calls = [], directoryCalls = [], closeCalls = [], scaleCalls = [], operationCalls = [], settingsCalls = [], paintCalls = [], detailCalls = [];
@@ -116,6 +117,9 @@ ids["#ui-scale"].fire("input");
 assert.equal(scaleCalls.at(-1).percent, 130);
 assert.equal(ids["#ui-scale-value"].textContent, "130%");
 assert.equal(settingsCalls.at(-1).scale, 130);
+ids["#startup-pane-count"].value = "4";
+ids["#startup-pane-count"].fire("change");
+assert.equal(settingsCalls.at(-1).startupPaneCount, 4);
 
 ids["#open-shortcuts"].fire("click");
 assert(!ids["#shortcut-page"].hidden);
@@ -260,7 +264,7 @@ const pane2 = find(workspace, node => node.className === "pane" && node.dataset.
 pane2.querySelector(".close-pane").fire("click");
 pane.querySelector(".close-pane").fire("click");
 assert.equal(closeCalls.length, 1);
-window.dpaneInitialViewSettings = { scale: 120, showHiddenEntries: false, showShortcutHints: false };
+window.dpaneInitialViewSettings = { scale: 120, showHiddenEntries: false, showShortcutHints: false, startupPaneCount: 3 };
 window.dpaneStartupTiming = true;
 const perfForTiming = { now: () => performance.now(), getEntriesByType(type) {
   if (type === "resource") return [{ name: "file:///local/ui/style.css", startTime: 1, responseEnd: 3, duration: 2 }, { name: "file:///private/name", startTime: 2, responseEnd: 4, duration: 2 }];

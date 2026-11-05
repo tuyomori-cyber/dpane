@@ -67,7 +67,9 @@ MINIMAL_UI_FILE = APP_DIR / "ui" / "startup-minimal.html"
 _inline_ui_file = None
 ICON_FILES = tuple(APP_DIR / "icon" / f"window-{size}.png" for size in (16, 32, 48, 64, 128))
 MAX_ENTRIES = 1_000
-DEFAULT_VIEW_SETTINGS = {"scale": 100, "showHiddenEntries": True, "showShortcutHints": True}
+DEFAULT_VIEW_SETTINGS = {"scale": 100, "showHiddenEntries": True, "showShortcutHints": True,
+                         "startupPaneCount": 3}
+DEFAULT_INITIAL_PANE_IDS = {"1", "2", "3"}
 
 
 def startup_ui_file() -> Path:
@@ -103,11 +105,20 @@ def validate_view_settings(value: object) -> dict[str, object]:
     for key in ("showHiddenEntries", "showShortcutHints"):
         if type(value.get(key)) is bool:
             settings[key] = value[key]
+    startup_pane_count = value.get("startupPaneCount")
+    if type(startup_pane_count) is int and 1 <= startup_pane_count <= 4:
+        settings["startupPaneCount"] = startup_pane_count
     return settings
 
 
 def settings_path() -> Path:
     return Path(GLib.get_user_config_dir()) / "dpane" / "settings.json"
+
+
+def initial_pane_ids(window: object) -> set[str]:
+    """Return the validated initial pane IDs, including for lightweight test doubles."""
+    value = getattr(window, "initial_pane_ids", None)
+    return value if isinstance(value, set) and value else DEFAULT_INITIAL_PANE_IDS
 
 
 def load_view_settings(path: Path) -> dict[str, object]:
@@ -279,6 +290,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 raise RuntimeError("応答付きメッセージを登録できません。")
             manager.connect("script-message-with-reply-received::initialDirectoryReply", self.on_initial_directory_reply)
         view_settings = load_view_settings(settings_path())
+        self.initial_pane_ids = {str(index) for index in range(1, view_settings["startupPaneCount"] + 1)}
         manager.add_script(WebKit2.UserScript.new(
             "window.dpaneInitialViewSettings = " + json.dumps(view_settings) + ";"
             + ("window.dpaneStartupTiming = true;" if STARTUP_TIMING.enabled else "")
@@ -340,7 +352,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             value = result if reply is not None else result.get_js_value()
             request = json.loads(value.to_json(0))
             pane_id = request.get("paneId")
-            initial = STARTUP_TIMING.enabled and pane_id in ("1", "2", "3") and pane_id not in self.initial_listing_ids
+            initial_ids = initial_pane_ids(self)
+            initial = STARTUP_TIMING.enabled and pane_id in initial_ids and pane_id not in self.initial_listing_ids
             started = perf_counter() if initial else None
             if initial:
                 STARTUP_TIMING.detail(f"一覧 ペイン{pane_id} 取得開始", started)
@@ -350,10 +363,10 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 count = len(response.get("entries", []))
                 status = "エラー" if "error" in response else f"{count}件"
                 STARTUP_TIMING.detail(f"一覧 ペイン{pane_id} 取得終了 {status} 所要{(finished - started) * 1000:.1f} ms", finished)
-            if STARTUP_TIMING.enabled and pane_id in ("1", "2", "3"):
+            if STARTUP_TIMING.enabled and pane_id in initial_ids:
                 self.initial_listing_ids.add(pane_id)
-                if len(self.initial_listing_ids) == 3:
-                    STARTUP_TIMING.mark("T5", "初期3ペインの一覧取得終了（エラー含む）")
+                if self.initial_listing_ids == initial_ids:
+                    STARTUP_TIMING.mark("T5", f"初期{len(initial_ids)}ペインの一覧取得終了（エラー含む）")
         except (TypeError, ValueError, AttributeError) as error:
             if reply is not None:
                 reply.return_error_message(f"要求を解釈できません: {error}")
@@ -374,10 +387,11 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         return True
 
     def flush_initial_listings(self) -> None:
-        if not self.startup_page_loaded or len(self.startup_responses) != 3:
+        initial_pane_count = len(initial_pane_ids(self))
+        if not self.startup_page_loaded or len(self.startup_responses) != initial_pane_count:
             return
         responses, self.startup_responses = self.startup_responses, []
-        STARTUP_TIMING.detail("初期3ペインの一覧を一括送信")
+        STARTUP_TIMING.detail(f"初期{initial_pane_count}ペインの一覧を一括送信")
         self.send_to_ui("receiveDirectories", responses)
 
     def on_startup_load_changed(self, _view, event) -> None:
@@ -433,7 +447,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 }[event]
             elif event == "list-receive":
                 pane_id, ready = data.get("paneId"), data.get("readyState")
-                if pane_id not in ("1", "2", "3") or ready not in ("loading", "interactive", "complete"):
+                if pane_id not in initial_pane_ids(self) or ready not in ("loading", "interactive", "complete"):
                     return
                 description = f"JS ペイン{pane_id} 一覧受信開始 readyState={ready}"
             elif event in ("performance-unavailable", "navigation-unavailable"):
@@ -455,7 +469,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                                f"load終了={time_value(data.get('loadEnd'))}（時刻はJS開始基準）")
             else:
                 pane_id, count, duration = data.get("paneId"), data.get("count"), data.get("duration")
-                if pane_id not in ("1", "2", "3") or type(count) is not int or not 0 <= count <= MAX_ENTRIES:
+                if pane_id not in initial_pane_ids(self) or type(count) is not int or not 0 <= count <= MAX_ENTRIES:
                     return
                 if type(duration) not in (int, float) or not 0 <= duration <= 3600000:
                     return
@@ -805,7 +819,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         trace = None
         if STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and callback == "receiveDirectory" and isinstance(response, dict):
             pane_id = response.get("paneId")
-            if pane_id in ("1", "2", "3") and pane_id not in self.startup_script_traced:
+            if pane_id in initial_pane_ids(self) and pane_id not in self.startup_script_traced:
                 self.startup_script_traced.add(pane_id)
                 trace = f"ペイン{pane_id}"
         elif STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and callback == "receiveDirectories" and "batch" not in self.startup_script_traced:

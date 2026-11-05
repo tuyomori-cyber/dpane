@@ -51,12 +51,13 @@
   }
   const workspace = document.querySelector("#workspace");
   const MAX_PANES = 8;
-  const defaultPaths = ["~", "~/Downloads", "~/Documents"];
+  const defaultPaths = ["~", "~/Downloads", "~/Documents", "~/Pictures"];
   const panes = new Map();
   const scaleInput = document.querySelector("#ui-scale");
   const scaleValue = document.querySelector("#ui-scale-value");
   const hiddenEntriesInput = document.querySelector("#show-hidden-entries");
   const shortcutHintsInput = document.querySelector("#show-shortcut-hints");
+  const startupPaneCountInput = document.querySelector("#startup-pane-count");
   const viewMenu = document.querySelector(".view-menu");
   const helpMenu = document.querySelector(".help-menu");
   const shortcutPage = document.querySelector("#shortcut-page");
@@ -68,14 +69,17 @@
     scaleValue.textContent = `${initialSettings.scale}%`;
     hiddenEntriesInput.checked = initialSettings.showHiddenEntries;
     shortcutHintsInput.checked = initialSettings.showShortcutHints;
+    startupPaneCountInput.value = String(initialSettings.startupPaneCount);
   }
   let showHiddenEntries = hiddenEntriesInput.checked;
   let showShortcutHints = shortcutHintsInput.checked;
+  const startupPaneCount = Number(startupPaneCountInput.value);
   let nextPaneId = 1;
   let layout;
   let activePane;
-  const pendingInitialListings = window.dpaneStartupTiming ? new Set(["1", "2", "3"]) : null;
-  const initialReplyRequests = window.dpaneStartupReply ? new Set(["1", "2", "3"]) : null;
+  const initialPaneIds = new Set(Array.from({ length: startupPaneCount }, (_value, index) => String(index + 1)));
+  const pendingInitialListings = window.dpaneStartupTiming ? new Set(initialPaneIds) : null;
+  const initialReplyRequests = window.dpaneStartupReply ? new Set(initialPaneIds) : null;
 
   function markInitialListingRendered(paneId) {
     if (!pendingInitialListings || !pendingInitialListings.delete(paneId) || pendingInitialListings.size) return;
@@ -86,7 +90,7 @@
 
   function saveViewSettings() {
     window.webkit.messageHandlers.saveViewSettings.postMessage({
-      scale: Number(scaleInput.value), showHiddenEntries, showShortcutHints
+      scale: Number(scaleInput.value), showHiddenEntries, showShortcutHints, startupPaneCount: Number(startupPaneCountInput.value)
     });
   }
 
@@ -839,8 +843,12 @@
     }
   };
 
-  const initial = defaultPaths.map(path => makePane(path));
-  layout = splitNode({ pane: initial[0] }, splitNode({ pane: initial[1] }, { pane: initial[2] }, "vertical"), "horizontal");
+  const initial = defaultPaths.slice(0, startupPaneCount).map(path => makePane(path));
+  if (startupPaneCount === 1) layout = { pane: initial[0] };
+  else if (startupPaneCount === 2) layout = splitNode({ pane: initial[0] }, { pane: initial[1] }, "horizontal");
+  else if (startupPaneCount === 3) layout = splitNode({ pane: initial[0] }, splitNode({ pane: initial[1] }, { pane: initial[2] }, "vertical"), "horizontal");
+  else layout = splitNode(splitNode({ pane: initial[0] }, { pane: initial[1] }, "vertical"),
+                          splitNode({ pane: initial[2] }, { pane: initial[3] }, "vertical"), "horizontal");
   renderLayout();
   focusPane(initial[0]);
   reportStartup("initial-layout");
@@ -861,6 +869,7 @@
     window.webkit.messageHandlers.uiScale.postMessage({ percent });
     saveViewSettings();
   });
+  startupPaneCountInput.addEventListener("change", saveViewSettings);
   hiddenEntriesInput.addEventListener("change", () => {
     showHiddenEntries = hiddenEntriesInput.checked;
     panes.forEach(pane => {

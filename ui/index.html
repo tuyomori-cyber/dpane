@@ -12,6 +12,13 @@
       <details class="view-menu">
         <summary>表示</summary>
         <div class="view-menu-panel">
+          <label for="startup-pane-count">起動時のペイン数</label>
+          <select id="startup-pane-count">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+          </select>
           <label for="ui-scale">画面のスケール <output id="ui-scale-value" for="ui-scale">100%</output></label>
           <input id="ui-scale" type="range" min="70" max="150" step="10" value="100">
           <label class="view-check"><input id="show-hidden-entries" type="checkbox" checked> 隠しファイル・フォルダを表示</label>
