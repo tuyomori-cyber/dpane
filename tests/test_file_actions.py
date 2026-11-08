@@ -141,6 +141,32 @@ class FileActionTests(unittest.TestCase):
             result = app.DirGroupWindow.choose_app(object(), app.Gio.File.new_for_path(str(self.path)), self.path, "text/plain")
         self.assertIn("アプリ", result["error"])
 
+    def test_explicit_default_change_does_not_launch_and_cancel_preserves_default(self):
+        dialog, chooser, selected = Mock(), Mock(), Mock()
+        chooser.get_app_info.return_value = selected
+        selected.set_as_default_for_type.return_value = True
+        file = app.Gio.File.new_for_path(str(self.path))
+        content_type = file.query_info("standard::content-type", app.Gio.FileQueryInfoFlags.NONE, None).get_content_type()
+        with patch.object(app.Gtk, "Dialog", return_value=dialog), patch.object(app.Gtk, "Label", return_value=Mock()), patch.object(app.Gtk.AppChooserWidget, "new", return_value=chooser):
+            dialog.run.return_value = app.Gtk.ResponseType.CANCEL
+            self.assertTrue(app.DirGroupWindow.choose_app(object(), file, self.path, content_type, set_default=True)["cancelled"])
+            selected.set_as_default_for_type.assert_not_called()
+            dialog.run.return_value = app.Gtk.ResponseType.OK
+            result = app.DirGroupWindow.choose_app(object(), file, self.path, content_type, set_default=True)
+        self.assertIn("既定アプリを変更", result["message"])
+        selected.set_as_default_for_type.assert_called_once_with(content_type)
+        selected.launch.assert_not_called()
+
+    def test_default_change_rejects_changed_content_type(self):
+        dialog, chooser, selected = Mock(), Mock(), Mock()
+        chooser.get_app_info.return_value = selected
+        dialog.run.return_value = app.Gtk.ResponseType.OK
+        file = app.Gio.File.new_for_path(str(self.path))
+        with patch.object(app.Gtk, "Dialog", return_value=dialog), patch.object(app.Gtk, "Label", return_value=Mock()), patch.object(app.Gtk.AppChooserWidget, "new", return_value=chooser):
+            result = app.DirGroupWindow.choose_app(object(), file, self.path, "test/unmatched", set_default=True)
+        self.assertIn("変更", result["error"])
+        selected.set_as_default_for_type.assert_not_called()
+
     def test_new_file_cancel_does_not_create(self):
         window, dialog, entry, request = Mock(), Mock(), Mock(), Mock()
         window.file_operation_busy = False

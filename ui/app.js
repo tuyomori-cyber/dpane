@@ -60,6 +60,10 @@
   const startupPaneCountInput = document.querySelector("#startup-pane-count");
   const viewMenu = document.querySelector(".view-menu");
   const helpMenu = document.querySelector(".help-menu");
+  const bookmarkButton = document.querySelector("#bookmark-menu-button");
+  const bookmarkPopup = document.querySelector("#bookmark-popup");
+  let bookmarkPaths = window.dpaneInitialBookmarks?.paths || [];
+  let bookmarkError = window.dpaneInitialBookmarks?.error || "";
   const shortcutPage = document.querySelector("#shortcut-page");
   const openShortcutsButton = document.querySelector("#open-shortcuts");
   const closeShortcutsButton = document.querySelector("#close-shortcuts");
@@ -259,10 +263,10 @@
     });
   }
 
-  function requestOpen(pane, path, choose = false) {
+  function requestOpen(pane, path, choose = false, setDefault = false) {
     pane.status.textContent = "ファイルを開いています…";
     pane.status.className = "status";
-    window.webkit.messageHandlers.fileOpen.postMessage({ paneId: pane.id, path, choose });
+    window.webkit.messageHandlers.fileOpen.postMessage({ paneId: pane.id, path, choose, setDefault });
   }
 
   function fileAction(pane, action) {
@@ -273,7 +277,7 @@
       pane.status.textContent = "実行するファイルを確認しています…";
       pane.status.className = "status";
       window.webkit.messageHandlers.fileExecute.postMessage({ paneId: pane.id, path });
-    } else requestOpen(pane, path, action === "choose");
+    } else requestOpen(pane, path, action === "choose", action === "set_default");
   }
 
   function fileOperation(pane, action) {
@@ -292,7 +296,7 @@
   menu.className = "file-menu";
   menu.hidden = true;
   menu.setAttribute("role", "menu");
-  for (const [label, action] of [["開く", "open"], ["別のアプリで開く", "choose"], ["実行", "execute"], ["名前を変更", "rename"], ["新しいフォルダ", "new_folder"], ["新しいファイル", "new_file"]]) {
+  for (const [label, action] of [["開く", "open"], ["別のアプリで開く", "choose"], ["既定のアプリを変更", "set_default"], ["実行", "execute"], ["名前を変更", "rename"], ["新しいフォルダ", "new_folder"], ["新しいファイル", "new_file"]]) {
     const button = document.createElement("button");
     button.textContent = label;
     button.dataset.action = action;
@@ -428,12 +432,106 @@
     updateAddButtons();
   }
 
-  function addPane(direction, source = activePane) {
+  function addPane(direction, source = activePane, path = source?.path, load = true) {
     if (!source || !panes.has(source.id) || panes.size >= MAX_PANES) return;
-    const pane = makePane(source.path, false);
+    const pane = makePane(path, false, load);
     layout = replacePane(layout, source, splitNode({ pane: source }, { pane }, direction));
     renderLayout();
     focusPane(pane);
+    return pane;
+  }
+
+  function updateBookmarkButtons() {
+    panes.forEach(pane => {
+      if (!pane.bookmarkButton) return;
+      const registered = bookmarkPaths.includes(pane.path);
+      pane.bookmarkButton.textContent = registered ? "★" : "☆";
+      pane.bookmarkButton.setAttribute("aria-label", registered ? "ブックマークを解除" : "ブックマークに登録");
+      pane.bookmarkButton.title = registered ? "ブックマークを解除" : "ブックマークに登録";
+    });
+  }
+
+  const bookmarkContext = document.createElement("div");
+  bookmarkContext.className = "bookmark-context";
+  bookmarkContext.hidden = true;
+  document.body.append(bookmarkContext);
+
+  function closeBookmarks() {
+    bookmarkPopup.hidden = true;
+    bookmarkContext.hidden = true;
+    bookmarkButton.setAttribute("aria-expanded", "false");
+  }
+
+  function openBookmark(path, pane, newPane = false) {
+    if (!pane || !panes.has(pane.id)) return;
+    if (newPane && panes.size >= MAX_PANES) return;
+    closeBookmarks();
+    window.webkit.messageHandlers.bookmarks.postMessage({ action: "open", path, paneId: pane.id, newPane });
+  }
+
+  function showBookmarkContext(event, path) {
+    event.preventDefault();
+    bookmarkContext.replaceChildren();
+    const addAction = (label, action, disabled = false) => {
+      const button = document.createElement("button");
+      button.textContent = label;
+      button.disabled = disabled;
+      button.addEventListener("click", action);
+      bookmarkContext.append(button);
+      return button;
+    };
+    addAction("開く", () => openBookmark(path, activePane));
+    addAction("新規ペインで開く", () => openBookmark(path, activePane, true), panes.size >= MAX_PANES);
+    const send = document.createElement("div");
+    send.className = "bookmark-send";
+    const sendButton = document.createElement("button");
+    sendButton.textContent = "送る ▶";
+    sendButton.disabled = !panes.size;
+    const submenu = document.createElement("div");
+    submenu.className = "bookmark-submenu";
+    visiblePanes().forEach((pane, index) => {
+      const item = document.createElement("button");
+      item.textContent = `Pane ${index + 1}`;
+      item.addEventListener("click", () => openBookmark(path, pane));
+      submenu.append(item);
+    });
+    send.append(sendButton, submenu);
+    bookmarkContext.append(send);
+    addAction("ブックマークを削除", () => {
+      bookmarkContext.hidden = true;
+      window.webkit.messageHandlers.bookmarks.postMessage({ action: "remove", path });
+    });
+    bookmarkContext.hidden = false;
+    bookmarkContext.style.left = `${Math.max(0, Math.min(event.clientX, window.innerWidth - bookmarkContext.offsetWidth))}px`;
+    bookmarkContext.style.top = `${Math.max(0, Math.min(event.clientY, window.innerHeight - bookmarkContext.offsetHeight))}px`;
+    submenu.classList.toggle("opens-left", event.clientX + bookmarkContext.offsetWidth + 170 > window.innerWidth);
+    submenu.classList.toggle("opens-up", event.clientY + panes.size * 35 > window.innerHeight);
+  }
+
+  function renderBookmarks() {
+    bookmarkPopup.replaceChildren();
+    if (bookmarkError || !bookmarkPaths.length) {
+      const message = document.createElement("p");
+      message.textContent = bookmarkError || "ブックマークはありません。";
+      bookmarkPopup.append(message);
+    }
+    bookmarkPaths.forEach(path => {
+      const row = document.createElement("div");
+      row.className = "bookmark-row";
+      row.addEventListener("contextmenu", event => showBookmarkContext(event, path));
+      const open = document.createElement("button");
+      open.className = "bookmark-open";
+      open.textContent = `📁 ${path.split("/").filter(Boolean).pop() || "/"}`;
+      open.title = path;
+      open.addEventListener("click", () => openBookmark(path, activePane));
+      const add = document.createElement("button");
+      add.textContent = "⊞";
+      add.title = "新規ペインで開く";
+      add.disabled = panes.size >= MAX_PANES;
+      add.addEventListener("click", () => openBookmark(path, activePane, true));
+      row.append(open, add);
+      bookmarkPopup.append(row);
+    });
   }
 
   function closePane(closing = activePane) {
@@ -684,7 +782,7 @@
     }
   }
 
-  function makePane(path, selectInitial = true) {
+  function makePane(path, selectInitial = true, load = true) {
     const id = String(nextPaneId++);
     const element = document.createElement("section");
     element.className = "pane";
@@ -694,6 +792,7 @@
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
         <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
+        <button class="bookmark-toggle" title="ブックマークに登録" aria-label="ブックマークに登録">☆</button>
         <button class="split-horizontal" title="右にペインを追加 (Ctrl+Shift+L)" aria-label="右にペインを追加">||</button>
         <button class="split-vertical" title="下にペインを追加 (Ctrl+Shift+J)" aria-label="下にペインを追加">＝</button>
         <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
@@ -701,11 +800,22 @@
         <button class="toggle-times" aria-pressed="false" title="更新日時の表示切替 (Ctrl+T)">Update times</button>
         </div><div class="entry-list"></div>`;
     pane.input = element.querySelector(".path");
+    pane.bookmarkButton = element.querySelector(".bookmark-toggle");
+    pane.bookmarkButton.addEventListener("click", () => {
+      const registered = bookmarkPaths.includes(pane.path);
+      window.webkit.messageHandlers.bookmarks.postMessage({ action: registered ? "remove" : "add", path: pane.path });
+    });
     setupCompletion(pane);
     pane.status = element.querySelector(".status");
     pane.timeButton = element.querySelector(".toggle-times");
     pane.timeButton.addEventListener("click", () => toggleModifiedTimes(pane));
     pane.list = element.querySelector(".entry-list");
+    pane.list.addEventListener("click", event => {
+      if (event.target !== pane.list || event.button !== 0) return;
+      pane.selectedNames.clear();
+      pane.selectedIndex = pane.selectionAnchor = -1;
+      updateSelection(pane, false);
+    });
     pane.list.addEventListener("contextmenu", event => {
       const entry = event.target.closest(".entry");
       const index = entry ? [...pane.list.querySelectorAll(".entry")].indexOf(entry) : -1;
@@ -727,7 +837,8 @@
     });
     element.addEventListener("focusin", () => setActivePane(pane));
     panes.set(pane.id, pane);
-    requestDirectory(pane, pane.path);
+    if (load) requestDirectory(pane, pane.path);
+    updateBookmarkButtons();
     return pane;
   }
 
@@ -780,6 +891,7 @@
       }
       const pathChanged = pane.path !== response.path;
       pane.path = response.path;
+      updateBookmarkButtons();
       pane.allEntries = response.entries;
       pane.truncated = response.truncated;
       let selectedNames = pathChanged ? new Set() : pane.selectedNames;
@@ -802,6 +914,27 @@
       if (pane === activePane && !preserveInput) focusPane(pane);
       if (measuring) reportStartup("list-render", { paneId: response.paneId, count: pane.entries.length, duration: performance.now() - renderStarted });
       markInitialListingRendered(response.paneId);
+    },
+    receiveBookmarks(response) {
+      if (response.error) {
+        bookmarkError = response.error;
+        renderBookmarks();
+        bookmarkPopup.hidden = false;
+        bookmarkButton.setAttribute("aria-expanded", "true");
+        return;
+      }
+      bookmarkError = "";
+      if (response.paths) {
+        bookmarkPaths = response.paths;
+        updateBookmarkButtons();
+        renderBookmarks();
+      } else if (response.action === "open") {
+        let pane = panes.get(response.paneId);
+        if (response.newPane) pane = addPane("horizontal", pane, response.path, false);
+        if (!pane) return;
+        window.dirGroup.receiveDirectory({ ...response, paneId: pane.id });
+        focusPane(pane);
+      }
     },
     receivePathCompletion(response) {
       const pane = panes.get(response.paneId);
@@ -853,11 +986,26 @@
   focusPane(initial[0]);
   reportStartup("initial-layout");
   document.addEventListener("keydown", handlePaneKeydown, true);
+  bookmarkButton.addEventListener("click", () => {
+    const opening = bookmarkPopup.hidden;
+    closeBookmarks();
+    if (opening) {
+      viewMenu.open = false;
+      helpMenu.open = false;
+      renderBookmarks();
+      bookmarkPopup.hidden = false;
+      bookmarkButton.setAttribute("aria-expanded", "true");
+    }
+  });
+  document.addEventListener("click", event => {
+    if (!bookmarkPopup.contains(event.target) && !bookmarkButton.contains(event.target) && !bookmarkContext.contains(event.target)) closeBookmarks();
+  });
+  document.addEventListener("keydown", event => { if (event.key === "Escape") closeBookmarks(); });
   viewMenu.addEventListener("toggle", () => {
-    if (viewMenu.open) helpMenu.open = false;
+    if (viewMenu.open) { helpMenu.open = false; closeBookmarks(); }
   });
   helpMenu.addEventListener("toggle", () => {
-    if (helpMenu.open) viewMenu.open = false;
+    if (helpMenu.open) { viewMenu.open = false; closeBookmarks(); }
   });
   openShortcutsButton.addEventListener("click", () => {
     openShortcuts();

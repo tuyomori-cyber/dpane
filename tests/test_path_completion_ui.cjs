@@ -10,7 +10,7 @@ class Element {
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times"]) {
+    for (const name of ["path", "status", "entry-list", "up", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }
@@ -22,6 +22,7 @@ class Element {
   append(...items) { for (const item of items) { item.parent = this; this.children.push(item); } }
   replaceChildren(...items) { this.children = []; this.append(...items); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(item => item !== this); }
+  contains(node) { return this === node || this.children.some(child => child.contains(node)); }
   addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }
   setAttribute(name, value) { this.attributes[name] = value; }
   setPointerCapture(pointerId) { this.pointerId = pointerId; }
@@ -40,7 +41,8 @@ class Element {
 }
 
 const workspace = new Element("main");
-const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-entries": new Element(), "#show-shortcut-hints": new Element(), "#startup-pane-count": new Element(), ".view-menu": new Element(), ".help-menu": new Element(), "#shortcut-page": new Element(), "#open-shortcuts": new Element(), "#close-shortcuts": new Element() };
+const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-entries": new Element(), "#show-shortcut-hints": new Element(), "#startup-pane-count": new Element(), ".view-menu": new Element(), ".help-menu": new Element(), "#shortcut-page": new Element(), "#open-shortcuts": new Element(), "#close-shortcuts": new Element(), "#bookmark-menu-button": new Element(), "#bookmark-popup": new Element() };
+ids["#bookmark-popup"].hidden = true;
 ids["#show-hidden-entries"].checked = true;
 ids["#show-shortcut-hints"].checked = true;
 ids["#ui-scale"].value = "100";
@@ -48,7 +50,10 @@ ids["#startup-pane-count"].value = "3";
 ids["#shortcut-page"].hidden = true;
 const document = { body: new Element("body"), activeElement: null, events: {}, readyState: "loading", pointTarget: null, querySelector: id => ids[id], createElement: tag => new Element(tag), elementFromPoint() { return this.pointTarget; }, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
 const calls = [], directoryCalls = [], closeCalls = [], scaleCalls = [], operationCalls = [], settingsCalls = [], paintCalls = [], detailCalls = [];
-const window = { innerWidth: 1200, innerHeight: 800, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }, webkit: { messageHandlers: { directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, saveViewSettings: { postMessage: value => settingsCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) }, startupPaint: { postMessage: value => paintCalls.push(value) }, startupDetail: { postMessage: value => detailCalls.push(value) } } } };
+const bookmarkCalls = [];
+const window = { innerWidth: 1200, innerHeight: 800, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }, webkit: { messageHandlers: { bookmarks: { postMessage: value => bookmarkCalls.push(value) }, directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, saveViewSettings: { postMessage: value => settingsCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) }, startupPaint: { postMessage: value => paintCalls.push(value) }, startupDetail: { postMessage: value => detailCalls.push(value) } } } };
+const openCalls = [];
+window.webkit.messageHandlers.fileOpen = { postMessage: value => openCalls.push(value) };
 const timers = new Map(); let nextTimer = 0;
 const setTimeout = fn => { const id = ++nextTimer; timers.set(id, fn); return id; };
 const clearTimeout = id => timers.delete(id);
@@ -152,6 +157,12 @@ window.dirGroup.receiveDirectory({ paneId: "2", path: "/home/other", entries: [
 const secondPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "2")[0];
 assert.equal(pane.querySelector(".entry-list").children.length, 3);
 const entries = pane.querySelector(".entry-list").children;
+entries[1].fire("click");
+pane.querySelector(".entry-list").fire("contextmenu", { target: entries[1], clientX: 0, clientY: 0 });
+const fileMenu = document.body.children.find(node => node.className === "file-menu");
+fileMenu.children.find(node => node.dataset.action === "set_default").fire("click");
+assert.equal(openCalls.at(-1).setDefault, true);
+assert.equal(openCalls.at(-1).path, "/home/test/.file");
 document.pointTarget = entries[2];
 entries[0].fire("pointerdown", { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
 flush();
@@ -172,6 +183,13 @@ for (const handler of document.events.keydown) handler(copySelection);
 assert(copySelection.prevented);
 assert.deepEqual(operationCalls.at(-1).paths, ["/home/test/.file", "/home/test/visible"]);
 operationCalls.length = 0;
+pane.querySelector(".entry-list").fire("click", { button: 2 });
+for (const handler of document.events.keydown) handler(copySelection);
+assert.deepEqual(operationCalls.at(-1).paths, ["/home/test/.file", "/home/test/visible"]);
+operationCalls.length = 0;
+pane.querySelector(".entry-list").fire("click", { button: 0 });
+for (const handler of document.events.keydown) handler(copySelection);
+assert.equal(operationCalls.length, 0);
 entries[1].fire("click");
 entries[2].fire("click", { ctrlKey: true });
 assert.match(pane.querySelector(".status").textContent, /3 件 · 2 件選択 · ↑↓/);
@@ -323,4 +341,18 @@ assert(detailCalls.slice(detailStart).some(item => item.event === "list-receive"
 const beforeNormalRequest = directoryCalls.length;
 replyPane.querySelector(".up").fire("click");
 assert.equal(directoryCalls.length, beforeNormalRequest + 1);
+replyPane.querySelector(".bookmark-toggle").fire("click");
+assert.equal(bookmarkCalls.at(-1).action, "add");
+assert.equal(bookmarkCalls.at(-1).path, "/home/test");
+window.dirGroup.receiveBookmarks({ action: "add", paths: ["/home/test"] });
+assert.equal(replyPane.querySelector(".bookmark-toggle").textContent, "★");
+ids["#bookmark-menu-button"].fire("click");
+assert.equal(ids["#bookmark-popup"].children[0].children[0].textContent, "📁 test");
+ids["#bookmark-popup"].children[0].children[1].fire("click");
+assert.equal(bookmarkCalls.at(-1).newPane, true);
+const countBeforeError = find(workspace, node => node.className === "pane").length;
+window.dirGroup.receiveBookmarks({ error: "読み込みエラー" });
+assert.equal(find(workspace, node => node.className === "pane").length, countBeforeError);
+window.dirGroup.receiveBookmarks({ action: "open", paneId: "1", newPane: true, path: "/home/test", entries: [] });
+assert.equal(find(workspace, node => node.className === "pane").length, countBeforeError + 1);
 console.log("Path completion UI checks passed.");

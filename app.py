@@ -26,6 +26,7 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, JavaScriptCore, WebKit
 
 import file_operations  # noqa: E402
 import path_completion  # noqa: E402
+import bookmarks  # noqa: E402
 
 _IMPORT_END = perf_counter()
 
@@ -290,9 +291,17 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 raise RuntimeError("応答付きメッセージを登録できません。")
             manager.connect("script-message-with-reply-received::initialDirectoryReply", self.on_initial_directory_reply)
         view_settings = load_view_settings(settings_path())
+        self.bookmark_path = settings_path().parent / "bookmarks.json"
+        self.bookmark_error = None
+        try:
+            self.bookmarks = bookmarks.load(self.bookmark_path)
+        except (OSError, ValueError, UnicodeError) as error:
+            self.bookmarks = []
+            self.bookmark_error = f"ブックマークを読み込めません: {error}"
         self.initial_pane_ids = {str(index) for index in range(1, view_settings["startupPaneCount"] + 1)}
         manager.add_script(WebKit2.UserScript.new(
             "window.dpaneInitialViewSettings = " + json.dumps(view_settings) + ";"
+            + "window.dpaneInitialBookmarks = " + json.dumps({"paths": self.bookmarks, "error": self.bookmark_error}, ensure_ascii=True) + ";"
             + ("window.dpaneStartupTiming = true;" if STARTUP_TIMING.enabled else "")
             + ("window.dpaneStartupSummary = true;" if STARTUP_TIMING.enabled and STARTUP_TIMING.summary else "")
             + ("window.dpaneStartupReply = true;" if self.startup_reply else ""),
@@ -315,6 +324,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         manager.connect("script-message-received::uiScale", self.on_ui_scale_request)
         manager.register_script_message_handler("saveViewSettings")
         manager.connect("script-message-received::saveViewSettings", self.on_save_view_settings)
+        manager.register_script_message_handler("bookmarks")
+        manager.connect("script-message-received::bookmarks", self.on_bookmarks_request)
         if STARTUP_TIMING.enabled:
             manager.register_script_message_handler("startupPaint")
             manager.connect("script-message-received::startupPaint", self.on_startup_paint)
@@ -494,6 +505,33 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         except (OSError, TypeError, ValueError, AttributeError) as error:
             print(f"表示設定を保存できません: {error}", file=sys.stderr)
 
+    def on_bookmarks_request(self, _manager, result) -> None:
+        try:
+            request = json.loads(result.get_js_value().to_json(0))
+            action = request.get("action")
+            if action == "open":
+                response = {"action": action, "paneId": request.get("paneId"), "newPane": request.get("newPane") is True,
+                            **list_directory(request.get("path"))}
+            elif action in ("add", "remove"):
+                if self.bookmark_error:
+                    raise ValueError(self.bookmark_error)
+                value = request.get("path")
+                if action == "add":
+                    value = bookmarks.normalize(value)
+                    updated = self.bookmarks if value in self.bookmarks else [*self.bookmarks, value]
+                else:
+                    if not isinstance(value, str) or value not in self.bookmarks:
+                        raise ValueError("ブックマークが見つかりません。")
+                    updated = [item for item in self.bookmarks if item != value]
+                bookmarks.save(self.bookmark_path, updated)
+                self.bookmarks = updated
+                response = {"action": action, "paths": updated}
+            else:
+                return
+        except (OSError, ValueError, TypeError, AttributeError, RuntimeError) as error:
+            response = {"error": f"ブックマーク操作に失敗しました: {error}"}
+        self.send_to_ui("receiveBookmarks", response)
+
     def on_path_completion_request(self, _manager, result) -> None:
         try:
             request = json.loads(result.get_js_value().to_json(0))
@@ -514,12 +552,15 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         try:
             request = json.loads(result.get_js_value().to_json(0))
             pane_id = request.get("paneId")
-            response = {"paneId": pane_id, **self.open_file(request.get("path"), request.get("choose") is True)}
+            if request.get("setDefault") is True:
+                response = {"paneId": pane_id, **self.open_file(request.get("path"), True, set_default=True)}
+            else:
+                response = {"paneId": pane_id, **self.open_file(request.get("path"), request.get("choose") is True)}
         except (TypeError, ValueError, AttributeError) as error:
             response = {"error": f"要求を解釈できません: {error}"}
         self.send_to_ui("receiveOpenResult", response)
 
-    def open_file(self, requested_path: object, choose: bool) -> dict[str, object]:
+    def open_file(self, requested_path: object, choose: bool, set_default: bool = False) -> dict[str, object]:
         path, error = resolve_file(requested_path)
         if error:
             return {"error": error}
@@ -529,6 +570,10 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         try:
             info = file.query_info("standard::content-type", Gio.FileQueryInfoFlags.NONE, None)
             content_type = info.get_content_type()
+            if set_default:
+                if not content_type:
+                    return {"error": "ファイルの種類を判定できません。"}
+                return self.choose_app(file, path, content_type, set_default=True)
             default = Gio.AppInfo.get_default_for_type(content_type, False) if content_type else None
             if choose or default is None:
                 return self.choose_app(file, path, content_type)
@@ -538,14 +583,15 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         except Exception as error:
             return {"error": f"ファイルを開けません: {error}"}
 
-    def choose_app(self, file: Gio.File, path: Path, content_type: str | None) -> dict[str, object]:
+    def choose_app(self, file: Gio.File, path: Path, content_type: str | None, set_default: bool = False) -> dict[str, object]:
         # Gtk.AppChooserDialog records a last-used association when accepted.
-        # Embed its standard chooser widget directly to keep associations unchanged.
-        dialog = Gtk.Dialog(title="アプリを選択", transient_for=self, modal=True)
-        dialog.add_buttons("キャンセル", Gtk.ResponseType.CANCEL, "開く", Gtk.ResponseType.OK)
+        # Use the widget directly; update the association only when explicitly requested.
+        dialog = Gtk.Dialog(title="既定のアプリを変更" if set_default else "アプリを選択", transient_for=self, modal=True)
+        dialog.add_buttons("キャンセル", Gtk.ResponseType.CANCEL, "既定に設定" if set_default else "開く", Gtk.ResponseType.OK)
         dialog.set_default_size(480, 400)
         area = dialog.get_content_area()
-        label = Gtk.Label(label=f"「{path.name}」を開くアプリを選択してください。")
+        label = Gtk.Label(label=(f"{content_type} の既定アプリを変更します。\n他のアプリにも反映されます。" if set_default
+                                 else f"「{path.name}」を開くアプリを選択してください。"))
         area.pack_start(label, False, False, 8)
         chooser = Gtk.AppChooserWidget.new(content_type or "application/octet-stream")
         chooser.set_show_other(True)
@@ -566,6 +612,13 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         checked, error = resolve_file(str(path))
         if error:
             return {"error": error}
+        if set_default:
+            current = Gio.File.new_for_path(str(checked)).query_info("standard::content-type", Gio.FileQueryInfoFlags.NONE, None).get_content_type()
+            if current != content_type:
+                return {"error": "ファイルの種類が変更されたため設定を中止しました。"}
+            if not app.set_as_default_for_type(content_type):
+                return {"error": "既定のアプリを設定できません。"}
+            return {"path": str(checked), "message": f"{content_type} の既定アプリを変更しました"}
         if not app.launch([Gio.File.new_for_path(str(checked))], None):
             return {"error": "選択したアプリでファイルを開けません。"}
         return {"path": str(checked), "message": "選択したアプリに開くよう依頼しました"}
