@@ -113,16 +113,19 @@
     return path.startsWith("/home/") ? path.replace(/^\/home\/[^/]+/, "~") : path;
   }
 
-  function requestDirectory(pane, path) {
+  function requestDirectory(pane, path, historyAction = "navigate") {
+    const requestId = ++pane.directoryRequestId;
+    pane.pendingDirectory = { id: requestId, historyAction };
+    pane.backButton.disabled = true;
     pane.status.textContent = "読み込み中…";
     pane.status.className = "status";
     if (initialReplyRequests?.delete(pane.id)) {
-      window.webkit.messageHandlers.initialDirectoryReply.postMessage({ paneId: pane.id, path })
+      window.webkit.messageHandlers.initialDirectoryReply.postMessage({ paneId: pane.id, path, requestId })
         .then(response => window.dirGroup.receiveDirectory(response))
-        .catch(() => window.dirGroup.receiveDirectory({ paneId: pane.id, error: "一覧を取得できませんでした。" }));
+        .catch(() => window.dirGroup.receiveDirectory({ paneId: pane.id, requestId, error: "一覧を取得できませんでした。" }));
       return;
     }
-    window.webkit.messageHandlers.directoryListing.postMessage({ paneId: pane.id, path });
+    window.webkit.messageHandlers.directoryListing.postMessage({ paneId: pane.id, path, requestId });
   }
 
   function hideCompletion(pane, invalidate = true) {
@@ -466,7 +469,13 @@
     if (!pane || !panes.has(pane.id)) return;
     if (newPane && panes.size >= MAX_PANES) return;
     closeBookmarks();
-    window.webkit.messageHandlers.bookmarks.postMessage({ action: "open", path, paneId: pane.id, newPane });
+    let requestId;
+    if (!newPane) {
+      requestId = ++pane.directoryRequestId;
+      pane.pendingDirectory = { id: requestId, historyAction: "navigate" };
+      pane.backButton.disabled = true;
+    }
+    window.webkit.messageHandlers.bookmarks.postMessage({ action: "open", path, paneId: pane.id, newPane, requestId });
   }
 
   function showBookmarkContext(event, path) {
@@ -788,9 +797,10 @@
     element.className = "pane";
     element.dataset.paneId = id;
     const pane = { id, element, path, entries: [], allEntries: [], selectedNames: new Set(), selectedIndex: -1,
-      selectionAnchor: -1, selectInitial, showModified: false };
+      selectionAnchor: -1, selectInitial, showModified: false, history: [], hasLocation: false, directoryRequestId: 0 };
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
+        <button class="back" title="前のフォルダへ戻る" aria-label="前のフォルダへ戻る" disabled>←</button>
         <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
         <button class="bookmark-toggle" title="ブックマークに登録" aria-label="ブックマークに登録">☆</button>
         <button class="split-horizontal" title="右にペインを追加 (Ctrl+Shift+L)" aria-label="右にペインを追加">||</button>
@@ -800,6 +810,11 @@
         <button class="toggle-times" aria-pressed="false" title="更新日時の表示切替 (Ctrl+T)">Update times</button>
         </div><div class="entry-list"></div>`;
     pane.input = element.querySelector(".path");
+    pane.backButton = element.querySelector(".back");
+    pane.backButton.disabled = true;
+    pane.backButton.addEventListener("click", () => {
+      if (pane.history.length && !pane.pendingDirectory) requestDirectory(pane, pane.history[pane.history.length - 1], "back");
+    });
     pane.bookmarkButton = element.querySelector(".bookmark-toggle");
     pane.bookmarkButton.addEventListener("click", () => {
       const registered = bookmarkPaths.includes(pane.path);
@@ -875,6 +890,10 @@
     receiveDirectory(response) {
       const pane = panes.get(response.paneId);
       if (!pane) return;
+      if (response.requestId !== undefined && response.requestId !== pane.directoryRequestId) return;
+      const pending = pane.pendingDirectory;
+      pane.pendingDirectory = null;
+      pane.backButton.disabled = !pane.history.length;
       const measuring = pendingInitialListings?.has(response.paneId);
       const renderStarted = measuring ? performance.now() : 0;
       if (measuring) reportStartup("list-receive", { paneId: response.paneId, readyState: document.readyState });
@@ -890,7 +909,13 @@
         return;
       }
       const pathChanged = pane.path !== response.path;
+      if (pane.hasLocation && pathChanged) {
+        if (pending?.historyAction === "back") pane.history.pop();
+        else pane.history.push(pane.path);
+      }
       pane.path = response.path;
+      pane.hasLocation = true;
+      pane.backButton.disabled = !pane.history.length;
       updateBookmarkButtons();
       pane.allEntries = response.entries;
       pane.truncated = response.truncated;
@@ -916,6 +941,14 @@
       markInitialListingRendered(response.paneId);
     },
     receiveBookmarks(response) {
+      if (response.action === "open" && !response.newPane && response.requestId !== undefined) {
+        const pane = panes.get(response.paneId);
+        if (!pane || response.requestId !== pane.directoryRequestId) return;
+        if (response.error) {
+          pane.pendingDirectory = null;
+          pane.backButton.disabled = !pane.history.length;
+        }
+      }
       if (response.error) {
         bookmarkError = response.error;
         renderBookmarks();
@@ -930,7 +963,10 @@
         renderBookmarks();
       } else if (response.action === "open") {
         let pane = panes.get(response.paneId);
-        if (response.newPane) pane = addPane("horizontal", pane, response.path, false);
+        if (response.newPane) {
+          pane = addPane("horizontal", pane, response.path, false);
+          delete response.requestId;
+        }
         if (!pane) return;
         window.dirGroup.receiveDirectory({ ...response, paneId: pane.id });
         focusPane(pane);

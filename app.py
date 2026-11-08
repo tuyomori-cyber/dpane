@@ -369,6 +369,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             if initial:
                 STARTUP_TIMING.detail(f"一覧 ペイン{pane_id} 取得開始", started)
             response = {"paneId": pane_id, **list_directory(request.get("path"))}
+            if type(request.get("requestId")) is int:
+                response["requestId"] = request["requestId"]
             if initial:
                 finished = perf_counter()
                 count = len(response.get("entries", []))
@@ -512,6 +514,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             if action == "open":
                 response = {"action": action, "paneId": request.get("paneId"), "newPane": request.get("newPane") is True,
                             **list_directory(request.get("path"))}
+                if type(request.get("requestId")) is int:
+                    response["requestId"] = request["requestId"]
             elif action in ("add", "remove"):
                 if self.bookmark_error:
                     raise ValueError(self.bookmark_error)

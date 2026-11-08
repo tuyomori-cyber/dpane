@@ -10,7 +10,7 @@ class Element {
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle"]) {
+    for (const name of ["path", "status", "entry-list", "up", "back", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }
@@ -355,4 +355,22 @@ window.dirGroup.receiveBookmarks({ error: "読み込みエラー" });
 assert.equal(find(workspace, node => node.className === "pane").length, countBeforeError);
 window.dirGroup.receiveBookmarks({ action: "open", paneId: "1", newPane: true, path: "/home/test", entries: [] });
 assert.equal(find(workspace, node => node.className === "pane").length, countBeforeError + 1);
+replyPane.querySelector(".up").fire("click");
+const parentRequest = directoryCalls.at(-1);
+window.dirGroup.receiveDirectory({ paneId: "1", requestId: parentRequest.requestId, path: "/home", entries: [] });
+assert.equal(replyPane.querySelector(".back").disabled, false);
+replyPane.querySelector(".back").fire("click");
+let backRequest = directoryCalls.at(-1);
+assert.equal(backRequest.path, "/home/test");
+window.dirGroup.receiveDirectory({ paneId: "1", requestId: backRequest.requestId, error: "アクセスできません" });
+assert.equal(replyPane.querySelector(".back").disabled, false);
+replyPane.querySelector(".back").fire("click");
+backRequest = directoryCalls.at(-1);
+window.dirGroup.receiveDirectory({ paneId: "1", requestId: parentRequest.requestId, path: "/stale", entries: [] });
+window.dirGroup.receiveDirectory({ paneId: "1", requestId: backRequest.requestId, path: "/home/test", entries: [] });
+assert.equal(replyPane.querySelector(".back").disabled, true);
+assert.equal(replyPane.querySelector(".path").value, "~");
+const replyPane2 = find(workspace, node => node.className === "pane" && node.dataset.paneId === "2")[0];
+replies[1].resolve({ paneId: "2", requestId: replies[1].request.requestId, path: "/other", entries: [] });
+assert.equal(replyPane2.querySelector(".back").disabled, true);
 console.log("Path completion UI checks passed.");
