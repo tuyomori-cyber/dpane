@@ -81,6 +81,7 @@
   let nextPaneId = 1;
   let layout;
   let activePane;
+  let paneDrag = null;
   const initialPaneIds = new Set(Array.from({ length: startupPaneCount }, (_value, index) => String(index + 1)));
   const pendingInitialListings = window.dpaneStartupTiming ? new Set(initialPaneIds) : null;
   const initialReplyRequests = window.dpaneStartupReply ? new Set(initialPaneIds) : null;
@@ -432,6 +433,9 @@
       return split;
     }
     workspace.replaceChildren(render(layout));
+    visiblePanes().forEach((pane, index) => {
+      pane.element.querySelector(".pane-title").textContent = `Pane ${index + 1}`;
+    });
     updateAddButtons();
   }
 
@@ -625,57 +629,80 @@
     selectEntry(pane, next, true, extend ? { shiftKey: true } : null);
   }
 
-  function setupLongPressSelection(button, pane, index) {
-    let timer = null;
-    let active = false;
+  function setupEntryDrag(button, pane, index) {
+    button.draggable = true;
+    button.addEventListener("dragstart", event => {
+      if (!event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      if (!pane.selectedNames.has(pane.entries[index].name)) selectEntry(pane, index, false);
+      const paths = selectedEntries(pane).map(entry => `${pane.path.replace(/\/$/, "")}/${entry.name}`);
+      const uris = paths.map(path => `file://${path.split("/").map(encodeURIComponent).join("/")}`);
+      paneDrag = { source: pane, paths };
+      event.dataTransfer.effectAllowed = "copy";
+      event.dataTransfer.setData("text/uri-list", uris.join("\r\n"));
+      if (paths.length > 1) {
+        const image = document.createElement("div");
+        image.className = "entry-icon folder-icon drag-image";
+        document.body.append(image);
+        event.dataTransfer.setDragImage(image, 10, 10);
+        requestAnimationFrame(() => image.remove());
+      }
+    });
+    button.addEventListener("dragend", () => { paneDrag = null; });
+  }
+
+  function setupBlankSelection(pane) {
+    let selection = null;
     let suppressClick = false;
-    let lastPointerEvent = null;
-    const finish = event => {
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-      if (active) suppressClick = true;
-      active = false;
-      if (event && button.hasPointerCapture(event.pointerId)) button.releasePointerCapture(event.pointerId);
-    };
-    const entryAtPointer = event => {
-      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(".entry");
-      return target ? [...pane.list.querySelectorAll(".entry")].indexOf(target) : -1;
-    };
-    button.addEventListener("pointerdown", event => {
-      if (event.button !== 0) return;
-      lastPointerEvent = event;
-      button.setPointerCapture(event.pointerId);
-      timer = setTimeout(() => {
-        timer = null;
-        active = true;
-        pane.selectedNames = new Set([pane.entries[index].name]);
-        pane.selectionAnchor = index;
-        pane.selectedIndex = index;
-        const current = entryAtPointer(lastPointerEvent);
-        if (current >= 0) selectRange(pane, current, false);
-        else updateSelection(pane, false);
-      }, 150);
-    });
-    button.addEventListener("pointermove", event => {
-      lastPointerEvent = event;
-      if (!active) return;
-      const current = entryAtPointer(event);
-      if (current >= 0) selectRange(pane, current, false);
-    });
-    button.addEventListener("pointerup", finish);
-    button.addEventListener("pointercancel", finish);
-    button.addEventListener("lostpointercapture", () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-      if (active) suppressClick = true;
-      active = false;
-    });
-    button.addEventListener("click", event => {
-      if (!suppressClick) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
+    pane.list.addEventListener("pointerdown", event => {
+      if (event.button !== 0 || event.target !== pane.list) return;
       suppressClick = false;
-    }, true);
+      selection = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, box: null };
+      pane.list.setPointerCapture(event.pointerId);
+    });
+    pane.list.addEventListener("pointermove", event => {
+      if (!selection || event.pointerId !== selection.pointerId) return;
+      if (!selection.box && Math.hypot(event.clientX - selection.x, event.clientY - selection.y) < 4) return;
+      if (!selection.box) {
+        selection.box = document.createElement("div");
+        selection.box.className = "selection-box";
+        document.body.append(selection.box);
+      }
+      const bounds = pane.list.getBoundingClientRect();
+      const x = Math.max(bounds.left, Math.min(bounds.right, event.clientX));
+      const y = Math.max(bounds.top, Math.min(bounds.bottom, event.clientY));
+      const left = Math.min(selection.x, x), right = Math.max(selection.x, x);
+      const top = Math.min(selection.y, y), bottom = Math.max(selection.y, y);
+      Object.assign(selection.box.style, { left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px` });
+      const buttons = [...pane.list.querySelectorAll(".entry")];
+      pane.selectedNames.clear();
+      buttons.forEach((button, index) => {
+        const rect = button.getBoundingClientRect();
+        if (rect.left < right && rect.right > left && rect.top < bottom && rect.bottom > top) pane.selectedNames.add(pane.entries[index].name);
+      });
+      pane.selectedIndex = buttons.findIndex((_button, index) => pane.selectedNames.has(pane.entries[index].name));
+      pane.selectionAnchor = pane.selectedIndex;
+      updateSelection(pane, false);
+    });
+    const finish = event => {
+      if (!selection || event.pointerId !== selection.pointerId) return;
+      suppressClick = !!selection.box;
+      selection.box?.remove();
+      selection = null;
+      if (pane.list.hasPointerCapture(event.pointerId)) pane.list.releasePointerCapture(event.pointerId);
+    };
+    pane.list.addEventListener("pointerup", finish);
+    pane.list.addEventListener("pointercancel", finish);
+    pane.list.addEventListener("lostpointercapture", finish);
+    pane.list.addEventListener("click", event => {
+      if (suppressClick) { suppressClick = false; return; }
+      if (event.target !== pane.list || event.button !== 0) return;
+      pane.selectedNames.clear();
+      pane.selectedIndex = pane.selectionAnchor = -1;
+      updateSelection(pane, false);
+    });
   }
 
   function formatModified(seconds) {
@@ -825,11 +852,21 @@
     pane.timeButton = element.querySelector(".toggle-times");
     pane.timeButton.addEventListener("click", () => toggleModifiedTimes(pane));
     pane.list = element.querySelector(".entry-list");
-    pane.list.addEventListener("click", event => {
-      if (event.target !== pane.list || event.button !== 0) return;
-      pane.selectedNames.clear();
-      pane.selectedIndex = pane.selectionAnchor = -1;
-      updateSelection(pane, false);
+    setupBlankSelection(pane);
+    element.addEventListener("dragover", event => {
+      if (!paneDrag || !panes.has(paneDrag.source.id)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = paneDrag.source === pane ? "none" : "copy";
+    });
+    element.addEventListener("drop", event => {
+      if (!paneDrag || !panes.has(paneDrag.source.id)) return;
+      event.preventDefault();
+      if (paneDrag.source === pane) return;
+      const paths = paneDrag.paths;
+      paneDrag = null;
+      pane.status.textContent = "ファイル操作を処理しています…";
+      pane.status.className = "status";
+      window.webkit.messageHandlers.fileOperation.postMessage({ paneId: pane.id, action: "drag_copy", path: pane.path, paths });
     });
     pane.list.addEventListener("contextmenu", event => {
       const entry = event.target.closest(".entry");
@@ -875,7 +912,7 @@
       button.innerHTML = `<span class="entry-icon ${entry.directory ? "folder-icon" : "file-icon"}" aria-hidden="true"></span><span class="entry-name"></span>`;
       button.querySelector(".entry-name").textContent = entry.name;
       updateEntryTimestamp(button, entry, pane.showModified);
-      setupLongPressSelection(button, pane, index);
+      setupEntryDrag(button, pane, index);
       button.addEventListener("click", event => selectEntry(pane, index, false, event));
       button.addEventListener("dblclick", () => activateSelectedEntry(pane));
       return button;

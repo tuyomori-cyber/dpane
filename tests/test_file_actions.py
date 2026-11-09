@@ -214,6 +214,33 @@ class FileActionTests(unittest.TestCase):
         self.assertEqual((destination / self.path.name).read_text(), "test")
         self.assertEqual((destination / second.name).read_text(), "second")
 
+    def test_drag_copy_multiple_items_preserves_cut_clipboard(self):
+        class ImmediateThread:
+            def __init__(self, target, daemon):
+                self.target = target
+            def start(self):
+                self.target()
+
+        second = Path(self.temp.name) / "second"
+        second.write_text("second")
+        destination = Path(self.temp.name) / "destination"
+        destination.mkdir()
+        window, request = Mock(), Mock()
+        window.file_operation_busy = False
+        clipboard = ([(self.path, app.file_operations.identity(self.path))], True)
+        window.file_clipboard = clipboard
+        request.get_js_value.return_value.to_json.return_value = json.dumps(
+            {"paneId": "2", "action": "drag_copy", "path": str(destination),
+             "paths": [str(self.path), str(second)]}
+        )
+        with patch.object(app.threading, "Thread", ImmediateThread), patch.object(app.GLib, "idle_add") as idle:
+            app.DirGroupWindow.on_file_operation_request(window, None, request)
+        self.assertEqual((destination / self.path.name).read_text(), "test")
+        self.assertEqual((destination / second.name).read_text(), "second")
+        self.assertTrue(self.path.exists())
+        self.assertEqual(window.file_clipboard, clipboard)
+        self.assertIn("コピーしました: 2 件", idle.call_args.args[1]["message"])
+
     def test_rename_updates_copy_and_cut_reservations(self):
         class ImmediateThread:
             def __init__(self, target, daemon):

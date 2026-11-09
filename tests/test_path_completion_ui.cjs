@@ -10,7 +10,7 @@ class Element {
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up", "back", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle"]) {
+    for (const name of ["path", "status", "entry-list", "up", "back", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle", "pane-title"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }
@@ -163,12 +163,15 @@ const fileMenu = document.body.children.find(node => node.className === "file-me
 fileMenu.children.find(node => node.dataset.action === "set_default").fire("click");
 assert.equal(openCalls.at(-1).setDefault, true);
 assert.equal(openCalls.at(-1).path, "/home/test/.file");
-document.pointTarget = entries[2];
-entries[0].fire("pointerdown", { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
-flush();
-entries[0].fire("pointermove", { pointerId: 1, clientX: 0, clientY: 0 });
-entries[0].fire("pointerup", { pointerId: 1 });
-assert(entries[0].fire("click").prevented); // Releasing a long press must not collapse the range.
+const list = pane.querySelector(".entry-list");
+list.getBoundingClientRect = () => ({ left: 0, right: 200, top: 0, bottom: 200 });
+entries.forEach((entry, index) => { entry.getBoundingClientRect = () => ({ left: 0, right: 200, top: index * 30, bottom: index * 30 + 30 }); });
+list.fire("pointerdown", { button: 0, pointerId: 1, clientX: 100, clientY: 120 });
+list.fire("pointermove", { pointerId: 1, clientX: 50, clientY: 10 });
+assert(document.body.children.some(node => node.className === "selection-box"));
+list.fire("pointerup", { pointerId: 1 });
+list.fire("click", { button: 0 });
+assert(!document.body.children.some(node => node.className === "selection-box"));
 pane.fire("pointerdown");
 const longPressCopy = { target: pane, key: "c", ctrlKey: true, preventDefault() { this.prevented = true; } };
 for (const handler of document.events.keydown) handler(longPressCopy);
@@ -177,6 +180,33 @@ operationCalls.length = 0;
 entries[0].fire("click");
 entries[2].fire("click", { ctrlKey: true });
 entries[1].fire("click", { shiftKey: true });
+const dragData = { values: {}, setData(type, value) { this.values[type] = value; }, setDragImage(image) { this.image = image; } };
+entries[1].fire("dragstart", { dataTransfer: dragData });
+assert.equal(dragData.effectAllowed, "copy");
+assert.equal(dragData.image.className, "entry-icon folder-icon drag-image");
+assert(!dragData.image.textContent);
+assert.equal(dragData.values["text/uri-list"], "file:///home/test/.file\r\nfile:///home/test/visible");
+assert(pane.fire("dragover", { dataTransfer: dragData }).prevented);
+assert.equal(dragData.dropEffect, "none");
+assert(pane.fire("drop", { dataTransfer: dragData }).prevented);
+assert(secondPane.fire("dragover", { dataTransfer: dragData }).prevented);
+assert.equal(dragData.dropEffect, "copy");
+assert(secondPane.fire("drop", { dataTransfer: dragData }).prevented);
+assert.equal(operationCalls.at(-1).action, "drag_copy");
+assert.equal(operationCalls.at(-1).paneId, "2");
+assert.equal(operationCalls.at(-1).path, "/home/other");
+assert.deepEqual(operationCalls.at(-1).paths, ["/home/test/.file", "/home/test/visible"]);
+assert(!secondPane.fire("drop", { dataTransfer: dragData }).prevented);
+operationCalls.length = 0;
+const singleDrag = { values: {}, setData(type, value) { this.values[type] = value; } };
+entries[0].fire("pointerdown", { button: 0, pointerId: 5, clientX: 20, clientY: 10 });
+flush();
+entries[0].fire("dragstart", { dataTransfer: singleDrag });
+assert.equal(singleDrag.values["text/uri-list"], "file:///home/test/.hidden");
+entries[0].fire("dragend");
+assert(!secondPane.fire("dragover", { dataTransfer: singleDrag }).prevented);
+entries[1].fire("click");
+entries[2].fire("click", { ctrlKey: true });
 pane.fire("pointerdown");
 const copySelection = { target: pane, key: "c", ctrlKey: true, preventDefault() { this.prevented = true; } };
 for (const handler of document.events.keydown) handler(copySelection);
@@ -264,7 +294,20 @@ targetedPane.querySelector(".split-horizontal").fire("click");
 assert.equal(directoryCalls.at(-1).path, "/home/test");
 assert.equal(document.activeElement.dataset.paneId, "4");
 const newPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "4")[0];
+let displayed = find(workspace, node => node.className === "pane");
+assert.deepEqual(displayed.map(node => node.dataset.paneId), ["1", "4", "2", "3"]);
+assert.deepEqual(displayed.map(node => node.querySelector(".pane-title").textContent), ["Pane 1", "Pane 2", "Pane 3", "Pane 4"]);
+window.dirGroup.receiveBookmarks({ action: "add", paths: ["/home/test"] });
+ids["#bookmark-menu-button"].fire("click");
+ids["#bookmark-popup"].children[0].fire("contextmenu", { clientX: 0, clientY: 0 });
+const context = document.body.children.find(node => node.className === "bookmark-context");
+const destinations = context.children.find(node => node.className === "bookmark-send").children[1].children;
+assert.deepEqual(destinations.map(node => node.textContent), displayed.map(node => node.querySelector(".pane-title").textContent));
+destinations[1].fire("click");
+assert.equal(bookmarkCalls.at(-1).paneId, "4");
 newPane.querySelector(".close-pane").fire("click");
+displayed = find(workspace, node => node.className === "pane");
+assert.deepEqual(displayed.map(node => node.querySelector(".pane-title").textContent), ["Pane 1", "Pane 2", "Pane 3"]);
 for (let i = 0; i < 5; i++) targetedPane.querySelector(".split-horizontal").fire("click");
 let paneList = find(workspace, node => node.className === "pane");
 assert.equal(paneList.length, 8);

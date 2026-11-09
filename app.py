@@ -781,10 +781,13 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                             failures.append((path, error))
                     return completed, failures
                 message = f"ゴミ箱へ移動しました: {len(entries)} 件"
-            elif action == "paste":
-                if self.file_clipboard is None:
-                    raise ValueError("コピーまたは切り取りの対象がありません。")
-                entries, cut = self.file_clipboard
+            elif action in ("paste", "drag_copy"):
+                if action == "drag_copy":
+                    entries, cut = selected_entries(request.get("paths")), False
+                else:
+                    if self.file_clipboard is None:
+                        raise ValueError("コピーまたは切り取りの対象がありません。")
+                    entries, cut = self.file_clipboard
                 destination = request.get("path")
                 plans = []
                 for path, expected in entries:
@@ -837,7 +840,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 try:
                     result = job()
                     response = {"paneId": pane_id, "message": message, "refresh": True}
-                    if action == "paste":
+                    if action in ("paste", "drag_copy"):
                         completed, failures = result
                         response["message"] = f"{'移動' if cut else 'コピー'}しました: {len(completed)} 件"
                         if failures:
