@@ -41,18 +41,19 @@ class Element {
 }
 
 const workspace = new Element("main");
-const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-entries": new Element(), "#show-shortcut-hints": new Element(), "#startup-pane-count": new Element(), ".view-menu": new Element(), ".help-menu": new Element(), "#shortcut-page": new Element(), "#open-shortcuts": new Element(), "#close-shortcuts": new Element(), "#bookmark-menu-button": new Element(), "#bookmark-popup": new Element() };
+const ids = { "#workspace": workspace, "#ui-scale": new Element(), "#ui-scale-value": new Element(), "#show-hidden-entries": new Element(), "#show-shortcut-hints": new Element(), "#startup-pane-count": new Element(), ".view-menu": new Element(), ".help-menu": new Element(), ".settings-menu": new Element(), "#reset-keybindings": new Element(), "#shortcut-menu-key": new Element(), "#shortcut-page": new Element(), "#open-shortcuts": new Element(), "#close-shortcuts": new Element(), "#bookmark-menu-button": new Element(), "#bookmark-popup": new Element() };
 ids["#bookmark-popup"].hidden = true;
 ids["#show-hidden-entries"].checked = true;
 ids["#show-shortcut-hints"].checked = true;
 ids["#ui-scale"].value = "100";
 ids["#startup-pane-count"].value = "3";
 ids["#shortcut-page"].hidden = true;
-const document = { body: new Element("body"), activeElement: null, events: {}, readyState: "loading", pointTarget: null, querySelector: id => ids[id], createElement: tag => new Element(tag), elementFromPoint() { return this.pointTarget; }, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
+const document = { body: new Element("body"), activeElement: null, events: {}, readyState: "loading", pointTarget: null, querySelector: id => ids[id], querySelectorAll: () => [], createElement: tag => new Element(tag), elementFromPoint() { return this.pointTarget; }, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
 const calls = [], directoryCalls = [], closeCalls = [], scaleCalls = [], operationCalls = [], settingsCalls = [], paintCalls = [], detailCalls = [];
-const bookmarkCalls = [];
-const window = { innerWidth: 1200, innerHeight: 800, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }, webkit: { messageHandlers: { bookmarks: { postMessage: value => bookmarkCalls.push(value) }, directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, saveViewSettings: { postMessage: value => settingsCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) }, startupPaint: { postMessage: value => paintCalls.push(value) }, startupDetail: { postMessage: value => detailCalls.push(value) } } } };
+const bookmarkCalls = [], resetCalls = [];
+const window = { dpaneKeybindings: { splitRight: "Ctrl+Shift+L", splitDown: "Ctrl+Shift+J", closePane: "Ctrl+Shift+W", toggleTimes: "Ctrl+T", showShortcuts: "Ctrl+K", nextPane: "Ctrl+Tab", previousPane: "Ctrl+Shift+Tab", pane1: "Alt+1", pane2: "Alt+2", pane3: "Alt+3", pane4: "Alt+4", pane5: "Alt+5", pane6: "Alt+6", pane7: "Alt+7", pane8: "Alt+8", chooseApplication: "Ctrl+Shift+O", execute: "Ctrl+Shift+E" }, innerWidth: 1200, innerHeight: 800, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }, webkit: { messageHandlers: { bookmarks: { postMessage: value => bookmarkCalls.push(value) }, directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, saveViewSettings: { postMessage: value => settingsCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) }, startupPaint: { postMessage: value => paintCalls.push(value) }, startupDetail: { postMessage: value => detailCalls.push(value) } } } };
 const openCalls = [];
+window.webkit.messageHandlers.resetKeybindings = { postMessage: value => resetCalls.push(value) };
 window.webkit.messageHandlers.fileOpen = { postMessage: value => openCalls.push(value) };
 const timers = new Map(); let nextTimer = 0;
 const setTimeout = fn => { const id = ++nextTimer; timers.set(id, fn); return id; };
@@ -62,6 +63,14 @@ vm.runInNewContext(fs.readFileSync(process.argv[2], "utf8"), { window, document,
 const find = (node, predicate) => [ ...(predicate(node) ? [node] : []), ...node.children.flatMap(child => find(child, predicate)) ];
 const pane = find(workspace, node => node.className === "pane")[0];
 const input = pane.querySelector(".path");
+input.value = "/home/test";
+const firstPathClick = input.fire("pointerdown", { button: 0 });
+assert.equal(firstPathClick.prevented, true);
+assert.strictEqual(document.activeElement, input);
+assert.equal(input.selectionStart, 0);
+assert.equal(input.selectionEnd, input.value.length);
+const secondPathClick = input.fire("pointerdown", { button: 0 });
+assert.equal(secondPathClick.prevented, undefined);
 input.focus();
 function type(value, cursor = value.length) { input.value = value; input.setSelectionRange(cursor, cursor); input.fire("input"); }
 function reply(request, candidates, common, count = candidates.length) { window.dirGroup.receivePathCompletion({ paneId: request.paneId, requestId: request.requestId, candidates, common, count }); }
@@ -135,6 +144,11 @@ const openShortcut = { target: input, key: "k", ctrlKey: true, shiftKey: false, 
 for (const handler of document.events.keydown) handler(openShortcut);
 assert(openShortcut.prevented);
 assert(!ids["#shortcut-page"].hidden);
+const toggleShortcut = { target: ids["#close-shortcuts"], key: "k", ctrlKey: true, preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(toggleShortcut);
+assert(toggleShortcut.prevented);
+assert(ids["#shortcut-page"].hidden);
+for (const handler of document.events.keydown) handler(openShortcut);
 const closeShortcut = { target: ids["#close-shortcuts"], key: "Escape", preventDefault() { this.prevented = true; } };
 for (const handler of document.events.keydown) handler(closeShortcut);
 assert(closeShortcut.prevented);
@@ -147,6 +161,15 @@ ids[".view-menu"].open = true;
 ids[".help-menu"].open = true;
 ids[".help-menu"].fire("toggle");
 assert(!ids[".view-menu"].open);
+for (const menu of [ids[".settings-menu"], ids[".help-menu"]]) {
+  const inside = new Element();
+  menu.append(inside);
+  menu.open = true;
+  for (const handler of document.events.click) handler({ target: inside });
+  assert(menu.open);
+  for (const handler of document.events.click) handler({ target: workspace });
+  assert(!menu.open);
+}
 
 window.dirGroup.receiveDirectory({ paneId: "1", path: "/home/test", entries: [
   { name: ".hidden", directory: true, modified: 1700000000 }, { name: ".file", directory: false, modified: null }, { name: "visible", directory: true, modified: 1700000000 }
@@ -311,6 +334,20 @@ assert.deepEqual(displayed.map(node => node.querySelector(".pane-title").textCon
 for (let i = 0; i < 5; i++) targetedPane.querySelector(".split-horizontal").fire("click");
 let paneList = find(workspace, node => node.className === "pane");
 assert.equal(paneList.length, 8);
+for (let number = 1; number <= 8; number++) {
+  const event = { target: targetedPane, key: String(number), altKey: true, preventDefault() { this.prevented = true; } };
+  for (const handler of document.events.keydown) handler(event);
+  assert(event.prevented);
+  assert.strictEqual(document.activeElement, paneList[number - 1]);
+}
+const customPaneBindings = { ...window.dpaneKeybindings, pane8: "Ctrl+8" };
+window.dirGroup.receiveKeybindingsReset({ bindings: customPaneBindings });
+const customPaneKey = { target: targetedPane, key: "8", ctrlKey: true, preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(customPaneKey);
+assert(customPaneKey.prevented);
+assert.strictEqual(document.activeElement, paneList[7]);
+window.dirGroup.receiveKeybindingsReset({ bindings: window.dpaneKeybindings });
+
 assert(paneList.every(node => node.querySelector(".split-horizontal").disabled && node.querySelector(".split-vertical").disabled));
 targetedPane.querySelector(".split-vertical").fire("click");
 assert.equal(find(workspace, node => node.className === "pane").length, 8);
@@ -416,4 +453,17 @@ assert.equal(replyPane.querySelector(".path").value, "~");
 const replyPane2 = find(workspace, node => node.className === "pane" && node.dataset.paneId === "2")[0];
 replies[1].resolve({ paneId: "2", requestId: replies[1].request.requestId, path: "/other", entries: [] });
 assert.equal(replyPane2.querySelector(".back").disabled, true);
+ids["#reset-keybindings"].fire("click");
+assert(resetCalls.length > 0);
+const customBindings = { ...window.dpaneKeybindings, showShortcuts: "Ctrl+Shift+H" };
+window.dirGroup.receiveKeybindingsReset({ bindings: customBindings });
+assert.equal(ids["#shortcut-menu-key"].textContent, "Ctrl+Shift+H");
+const customShortcut = { target: replyPane, key: "H", ctrlKey: true, shiftKey: true, preventDefault() { this.prevented = true; } };
+for (const handler of document.events.keydown) handler(customShortcut);
+assert(customShortcut.prevented);
+assert.equal(ids["#shortcut-page"].hidden, false);
+for (const handler of document.events.keydown) handler(customShortcut);
+assert.equal(ids["#shortcut-page"].hidden, true);
+window.dirGroup.receiveKeybindingsReset({ bindings: window.dpaneKeybindings });
+assert.equal(ids["#shortcut-menu-key"].textContent, "Ctrl+K");
 console.log("Path completion UI checks passed.");

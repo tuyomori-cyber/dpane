@@ -27,6 +27,7 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, JavaScriptCore, WebKit
 import file_operations  # noqa: E402
 import path_completion  # noqa: E402
 import bookmarks  # noqa: E402
+import keybindings  # noqa: E402
 
 _IMPORT_END = perf_counter()
 
@@ -291,6 +292,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                 raise RuntimeError("応答付きメッセージを登録できません。")
             manager.connect("script-message-with-reply-received::initialDirectoryReply", self.on_initial_directory_reply)
         view_settings = load_view_settings(settings_path())
+        self.keybindings_path = settings_path().parent / "keybindings.json"
+        bindings, bindings_error = keybindings.load(self.keybindings_path)
         self.bookmark_path = settings_path().parent / "bookmarks.json"
         self.bookmark_error = None
         try:
@@ -301,6 +304,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         self.initial_pane_ids = {str(index) for index in range(1, view_settings["startupPaneCount"] + 1)}
         manager.add_script(WebKit2.UserScript.new(
             "window.dpaneInitialViewSettings = " + json.dumps(view_settings) + ";"
+            + "window.dpaneKeybindings = " + json.dumps(bindings) + ";"
+            + "window.dpaneKeybindingsError = " + json.dumps(bindings_error) + ";"
             + "window.dpaneInitialBookmarks = " + json.dumps({"paths": self.bookmarks, "error": self.bookmark_error}, ensure_ascii=True) + ";"
             + ("window.dpaneStartupTiming = true;" if STARTUP_TIMING.enabled else "")
             + ("window.dpaneStartupSummary = true;" if STARTUP_TIMING.enabled and STARTUP_TIMING.summary else "")
@@ -324,6 +329,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         manager.connect("script-message-received::uiScale", self.on_ui_scale_request)
         manager.register_script_message_handler("saveViewSettings")
         manager.connect("script-message-received::saveViewSettings", self.on_save_view_settings)
+        manager.register_script_message_handler("resetKeybindings")
+        manager.connect("script-message-received::resetKeybindings", self.on_reset_keybindings)
         manager.register_script_message_handler("bookmarks")
         manager.connect("script-message-received::bookmarks", self.on_bookmarks_request)
         if STARTUP_TIMING.enabled:
@@ -506,6 +513,14 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             save_view_settings(settings_path(), validate_view_settings(request))
         except (OSError, TypeError, ValueError, AttributeError) as error:
             print(f"表示設定を保存できません: {error}", file=sys.stderr)
+
+    def on_reset_keybindings(self, _manager, _result) -> None:
+        try:
+            keybindings.reset(self.keybindings_path)
+            response = {"bindings": keybindings.DEFAULTS}
+        except OSError as error:
+            response = {"error": f"ショートカットを初期値に戻せません: {error}"}
+        self.send_to_ui("receiveKeybindingsReset", response)
 
     def on_bookmarks_request(self, _manager, result) -> None:
         try:
@@ -847,8 +862,9 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                             names = ", ".join(path.name for path, _error in failures[:3])
                             response["error"] = f"{len(completed)} 件成功、{len(failures)} 件の操作に失敗しました: {names}"
                         if cut:
+                            failed_paths = {path for path, _error in failures}
                             remaining = [(path, expected) for path, expected, _mode, _target, _source in plans
-                                         if all(path != done for done in completed)]
+                                         if path in failed_paths]
                             self.file_clipboard = (remaining, True) if remaining else None
                     if action == "trash":
                         completed, failures = result

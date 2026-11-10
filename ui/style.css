@@ -18,12 +18,12 @@ nav { display: flex; gap: 6px; }
 .bookmark-send:hover .bookmark-submenu, .bookmark-send:focus-within .bookmark-submenu { display: grid; }
 .bookmark-submenu.opens-left { left: auto; right: 100%; }
 .bookmark-submenu.opens-up { top: auto; bottom: -4px; }
-.view-menu, .help-menu { position: relative; }
-.view-menu summary, .help-menu summary { cursor: pointer; list-style: none; padding: 6px 10px; border-radius: 4px; }
-.view-menu summary::-webkit-details-marker, .help-menu summary::-webkit-details-marker { display: none; }
-.view-menu summary:hover, .view-menu[open] summary, .help-menu summary:hover, .help-menu[open] summary { background: #3b4658; }
+.view-menu, .help-menu, .settings-menu { position: relative; }
+.view-menu summary, .help-menu summary, .settings-menu summary { cursor: pointer; list-style: none; padding: 6px 10px; border-radius: 4px; }
+.view-menu summary::-webkit-details-marker, .help-menu summary::-webkit-details-marker, .settings-menu summary::-webkit-details-marker { display: none; }
+.view-menu summary:hover, .view-menu[open] summary, .help-menu summary:hover, .help-menu[open] summary, .settings-menu summary:hover, .settings-menu[open] summary { background: #3b4658; }
 .view-menu-panel { position: absolute; top: 100%; left: 0; z-index: 20; display: grid; gap: 10px; min-width: 245px; padding: 12px; background: #252a34; border: 1px solid #596579; border-radius: 4px; box-shadow: 0 4px 12px #0009; }
-.help-menu > button { position: absolute; top: 100%; left: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 18px; white-space: nowrap; background: #252a34; border-color: #596579; box-shadow: 0 4px 12px #0009; }
+.help-menu > button, .settings-menu > button { position: absolute; top: 100%; left: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 18px; white-space: nowrap; background: #252a34; border-color: #596579; box-shadow: 0 4px 12px #0009; }
 .help-menu kbd { padding: 1px 5px; border: 1px solid #69788d; border-radius: 3px; color: #bedcff; background: #171d27; font: .78em ui-monospace, monospace; }
 .view-menu-panel output { float: right; }
 .view-menu-panel input[type="range"] { width: 100%; margin: 0; }

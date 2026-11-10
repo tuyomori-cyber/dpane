@@ -60,6 +60,8 @@
   const startupPaneCountInput = document.querySelector("#startup-pane-count");
   const viewMenu = document.querySelector(".view-menu");
   const helpMenu = document.querySelector(".help-menu");
+  const settingsMenu = document.querySelector(".settings-menu");
+  let keybindings = window.dpaneKeybindings;
   const bookmarkButton = document.querySelector("#bookmark-menu-button");
   const bookmarkPopup = document.querySelector("#bookmark-popup");
   let bookmarkPaths = window.dpaneInitialBookmarks?.paths || [];
@@ -96,6 +98,29 @@
   function saveViewSettings() {
     window.webkit.messageHandlers.saveViewSettings.postMessage({
       scale: Number(scaleInput.value), showHiddenEntries, showShortcutHints, startupPaneCount: Number(startupPaneCountInput.value)
+    });
+  }
+
+  function matchesShortcut(event, name) {
+    const parts = keybindings[name].split("+");
+    const key = parts.pop();
+    const eventKey = (event.key === "Tab" || event.key === "ISO_Left_Tab" || event.code === "Tab") ? "Tab"
+      : (event.shiftKey && /^Digit[0-9]$/.test(event.code || "") ? event.code.slice(-1) : event.key.toUpperCase());
+    return eventKey === (key === "Tab" ? key : key.toUpperCase()) &&
+      !!event.ctrlKey === parts.includes("Ctrl") && (!!event.shiftKey || event.key === "ISO_Left_Tab") === parts.includes("Shift") &&
+      !!event.altKey === parts.includes("Alt") && !!event.metaKey === parts.includes("Meta");
+  }
+
+  function updateShortcutLabels(statusIsDefault = new Map()) {
+    document.querySelectorAll("[data-bindings]").forEach(node => {
+      node.textContent = node.dataset.bindings.split(" ").map(name => keybindings[name]).join(" / ");
+    });
+    document.querySelector("#shortcut-menu-key").textContent = keybindings.showShortcuts;
+    panes.forEach(pane => {
+      pane.element.querySelector(".split-horizontal").title = `右にペインを追加 (${keybindings.splitRight})`;
+      pane.element.querySelector(".split-vertical").title = `下にペインを追加 (${keybindings.splitDown})`;
+      pane.element.querySelector(".toggle-times").title = `更新日時の表示切替 (${keybindings.toggleTimes})`;
+      if (statusIsDefault.get(pane)) pane.status.textContent = defaultStatus(pane);
     });
   }
 
@@ -580,7 +605,7 @@
 
   function defaultStatus(pane) {
     const selected = pane.selectedNames.size ? ` · ${pane.selectedNames.size} 件選択` : "";
-    const hints = showShortcutHints ? " · ↑↓ / Enter / Backspace / F5 · Ctrl+Tab / Alt+1〜3" : "";
+    const hints = showShortcutHints ? ` · ↑↓ / Enter / Backspace / F5 · ${keybindings.nextPane} / ${Array.from({ length: MAX_PANES }, (_, index) => keybindings[`pane${index + 1}`]).join(" / ")}` : "";
     return `${pane.entries.length} 件${pane.truncated ? "（取得上限 1,000 件）" : ""}${selected}${hints}`;
   }
 
@@ -741,7 +766,7 @@
   function handlePaneKeydown(event) {
     if (!activePane) return;
     if (!shortcutPage.hidden) {
-      if (event.key === "Escape") {
+      if (!event.isComposing && (event.key === "Escape" || matchesShortcut(event, "showShortcuts"))) {
         event.preventDefault();
         closeShortcuts();
       }
@@ -759,41 +784,27 @@
       focusPane(activePane);
       return;
     }
-    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "k") {
-      event.preventDefault();
-      openShortcuts();
-      return;
+    if (event.isComposing) return;
+    if (matchesShortcut(event, "showShortcuts")) {
+      event.preventDefault(); openShortcuts(); return;
     }
-    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
-      const key = event.key.toLowerCase();
-      if (key === "l" || key === "j" || key === "w") {
-        event.preventDefault();
-        if (key === "w") closePane();
-        else addPane(key === "l" ? "horizontal" : "vertical");
-        return;
-      }
-      if ((key === "o" || key === "e") && event.target !== activePane.input && event.target.closest("#workspace")) {
-        event.preventDefault();
-        menu.hidden = true;
-        fileAction(activePane, key === "o" ? "choose" : "execute");
-        return;
-      }
+    for (const [name, action] of [["splitRight", () => addPane("horizontal")], ["splitDown", () => addPane("vertical")], ["closePane", () => closePane()]]) {
+      if (matchesShortcut(event, name)) { event.preventDefault(); action(); return; }
     }
-    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "t" &&
-        (event.target === document.body || event.target.closest("#workspace"))) {
-      event.preventDefault();
-      toggleModifiedTimes(activePane);
-      return;
+    if (matchesShortcut(event, "toggleTimes") && (event.target === document.body || event.target.closest("#workspace"))) {
+      event.preventDefault(); toggleModifiedTimes(activePane); return;
     }
-    const isTab = event.key === "Tab" || event.key === "ISO_Left_Tab" || event.code === "Tab";
-    if (event.ctrlKey && isTab) {
-      event.preventDefault();
-      moveActivePane(event.shiftKey || event.key === "ISO_Left_Tab" ? -1 : 1);
-    } else if (event.altKey && /^[1-3]$/.test(event.key)) {
-      event.preventDefault();
-      focusPaneByNumber(Number(event.key));
-    } else if (event.target === activePane.input || (!event.target.closest("#workspace") && event.target !== document.body)) return;
-    else if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && ["c", "x", "v"].includes(event.key.toLowerCase())) {
+    for (const [name, offset] of [["nextPane", 1], ["previousPane", -1]]) {
+      if (matchesShortcut(event, name)) { event.preventDefault(); moveActivePane(offset); return; }
+    }
+    for (let number = 1; number <= MAX_PANES; number++) {
+      if (matchesShortcut(event, `pane${number}`)) { event.preventDefault(); focusPaneByNumber(number); return; }
+    }
+    if (event.target === activePane.input || (!event.target.closest("#workspace") && event.target !== document.body)) return;
+    for (const [name, action] of [["chooseApplication", "choose"], ["execute", "execute"]]) {
+      if (matchesShortcut(event, name)) { event.preventDefault(); menu.hidden = true; fileAction(activePane, action); return; }
+    }
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && ["c", "x", "v"].includes(event.key.toLowerCase())) {
       event.preventDefault();
       const action = { c: "copy", x: "cut", v: "paste" }[event.key.toLowerCase()];
       fileOperation(activePane, action);
@@ -828,13 +839,14 @@
     element.innerHTML = `
       <div class="pane-header"><span class="pane-title">Pane ${id}</span>
         <button class="back" title="前のフォルダへ戻る" aria-label="前のフォルダへ戻る" disabled>←</button>
-        <button class="up" title="親フォルダへ">↑</button><input class="path" aria-label="フォルダのパス">
+        <button class="up" title="親フォルダへ">↑</button>
         <button class="bookmark-toggle" title="ブックマークに登録" aria-label="ブックマークに登録">☆</button>
-        <button class="split-horizontal" title="右にペインを追加 (Ctrl+Shift+L)" aria-label="右にペインを追加">||</button>
-        <button class="split-vertical" title="下にペインを追加 (Ctrl+Shift+J)" aria-label="下にペインを追加">＝</button>
+        <input class="path" aria-label="フォルダのパス">
+        <button class="split-horizontal" title="右にペインを追加 (${keybindings.splitRight})" aria-label="右にペインを追加">||</button>
+        <button class="split-vertical" title="下にペインを追加 (${keybindings.splitDown})" aria-label="下にペインを追加">＝</button>
         <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
         </div><div class="status-row"><p class="status">準備中…</p>
-        <button class="toggle-times" aria-pressed="false" title="更新日時の表示切替 (Ctrl+T)">Update times</button>
+        <button class="toggle-times" aria-pressed="false" title="更新日時の表示切替 (${keybindings.toggleTimes})">Update times</button>
         </div><div class="entry-list"></div>`;
     pane.input = element.querySelector(".path");
     pane.backButton = element.querySelector(".back");
@@ -878,6 +890,12 @@
     element.querySelector(".split-horizontal").addEventListener("click", () => addPane("horizontal", pane));
     element.querySelector(".split-vertical").addEventListener("click", () => addPane("vertical", pane));
     element.querySelector(".close-pane").addEventListener("click", () => closePane(pane));
+    pane.input.addEventListener("pointerdown", event => {
+      if (event.button !== 0 || document.activeElement === pane.input) return;
+      event.preventDefault();
+      pane.input.focus();
+      pane.input.setSelectionRange(0, pane.input.value.length);
+    });
     pane.input.addEventListener("keydown", event => { if (event.key === "Enter" && !event.isComposing) go(); });
     element.querySelector(".up").addEventListener("click", () => {
       const path = pane.path || pane.input.value;
@@ -977,6 +995,12 @@
       if (measuring) reportStartup("list-render", { paneId: response.paneId, count: pane.entries.length, duration: performance.now() - renderStarted });
       markInitialListingRendered(response.paneId);
     },
+    receiveKeybindingsReset(response) {
+      if (response.error) { window.alert(response.error); return; }
+      const statusIsDefault = new Map([...panes.values()].map(pane => [pane, pane.status.textContent === defaultStatus(pane)]));
+      keybindings = response.bindings;
+      updateShortcutLabels(statusIsDefault);
+    },
     receiveBookmarks(response) {
       if (response.action === "open" && !response.newPane && response.requestId !== undefined) {
         const pane = panes.get(response.paneId);
@@ -1057,6 +1081,8 @@
                           splitNode({ pane: initial[2] }, { pane: initial[3] }, "vertical"), "horizontal");
   renderLayout();
   focusPane(initial[0]);
+  updateShortcutLabels();
+  if (window.dpaneKeybindingsError) setTimeout(() => window.alert(window.dpaneKeybindingsError), 0);
   reportStartup("initial-layout");
   document.addEventListener("keydown", handlePaneKeydown, true);
   bookmarkButton.addEventListener("click", () => {
@@ -1065,6 +1091,7 @@
     if (opening) {
       viewMenu.open = false;
       helpMenu.open = false;
+      settingsMenu.open = false;
       renderBookmarks();
       bookmarkPopup.hidden = false;
       bookmarkButton.setAttribute("aria-expanded", "true");
@@ -1072,13 +1099,22 @@
   });
   document.addEventListener("click", event => {
     if (!bookmarkPopup.contains(event.target) && !bookmarkButton.contains(event.target) && !bookmarkContext.contains(event.target)) closeBookmarks();
+    if (!settingsMenu.contains(event.target)) settingsMenu.open = false;
+    if (!helpMenu.contains(event.target)) helpMenu.open = false;
   });
   document.addEventListener("keydown", event => { if (event.key === "Escape") closeBookmarks(); });
   viewMenu.addEventListener("toggle", () => {
-    if (viewMenu.open) { helpMenu.open = false; closeBookmarks(); }
+    if (viewMenu.open) { helpMenu.open = false; settingsMenu.open = false; closeBookmarks(); }
   });
   helpMenu.addEventListener("toggle", () => {
-    if (helpMenu.open) { viewMenu.open = false; closeBookmarks(); }
+    if (helpMenu.open) { viewMenu.open = false; settingsMenu.open = false; closeBookmarks(); }
+  });
+  settingsMenu.addEventListener("toggle", () => {
+    if (settingsMenu.open) { viewMenu.open = false; helpMenu.open = false; closeBookmarks(); }
+  });
+  document.querySelector("#reset-keybindings").addEventListener("click", () => {
+    settingsMenu.open = false;
+    window.webkit.messageHandlers.resetKeybindings.postMessage({});
   });
   openShortcutsButton.addEventListener("click", () => {
     openShortcuts();

@@ -29,9 +29,13 @@
           <label class="view-check"><input id="show-shortcut-hints" type="checkbox" checked> ショートカット案内を表示</label>
         </div>
       </details>
+      <details class="settings-menu">
+        <summary>設定</summary>
+        <button id="reset-keybindings" type="button">ショートカットを初期値に戻す</button>
+      </details>
       <details class="help-menu">
         <summary>ヘルプ</summary>
-        <button id="open-shortcuts" type="button"><span>ショートカット一覧</span><kbd>Ctrl + K</kbd></button>
+        <button id="open-shortcuts" type="button"><span>ショートカット一覧</span><kbd id="shortcut-menu-key">Ctrl+K</kbd></button>
       </details>
     </nav>
   </header>
@@ -43,18 +47,18 @@
         <button id="close-shortcuts" type="button" aria-label="ショートカット一覧を閉じる">×</button>
       </header>
       <div class="help-page-body">
-        <p>パス欄以外で使えるショートカットです。</p>
+        <p>ペイン操作のショートカットです。一部はパス欄でも使えます。</p>
         <table>
           <thead><tr><th>キー</th><th>操作</th></tr></thead>
           <tbody>
-            <tr><td>Ctrl+Shift+L</td><td>アクティブペインの右に追加</td></tr>
-            <tr><td>Ctrl+Shift+J</td><td>アクティブペインの下に追加</td></tr>
-            <tr><td>Ctrl+Shift+W</td><td>アクティブペインを閉じる</td></tr>
-            <tr><td>Ctrl+T</td><td>更新日時を表示 / 非表示</td></tr>
-            <tr><td>Ctrl+K</td><td>ショートカット一覧を開く</td></tr>
-            <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>次 / 前のペインへ移動</td></tr>
-            <tr><td>Alt+1〜Alt+3</td><td>表示順の1〜3番目のペインへ移動</td></tr>
-            <tr><td>Ctrl+Shift+O / Ctrl+Shift+E</td><td>別のアプリで開く / 実行を確認</td></tr>
+            <tr><td data-bindings="splitRight">Ctrl+Shift+L</td><td>アクティブペインの右に追加</td></tr>
+            <tr><td data-bindings="splitDown">Ctrl+Shift+J</td><td>アクティブペインの下に追加</td></tr>
+            <tr><td data-bindings="closePane">Ctrl+Shift+W</td><td>アクティブペインを閉じる</td></tr>
+            <tr><td data-bindings="toggleTimes">Ctrl+T</td><td>更新日時を表示 / 非表示</td></tr>
+            <tr><td data-bindings="showShortcuts">Ctrl+K</td><td>ショートカット一覧を開く / 閉じる</td></tr>
+            <tr><td data-bindings="nextPane previousPane">Ctrl+Tab / Ctrl+Shift+Tab</td><td>次 / 前のペインへ移動</td></tr>
+            <tr><td data-bindings="pane1 pane2 pane3 pane4 pane5 pane6 pane7 pane8">Alt+1〜Alt+8</td><td>表示順の1〜8番目のペインへ移動</td></tr>
+            <tr><td data-bindings="chooseApplication execute">Ctrl+Shift+O / Ctrl+Shift+E</td><td>別のアプリで開く / 実行を確認</td></tr>
             <tr><td>Ctrl+C / Ctrl+X / Ctrl+V</td><td>コピー / 切り取り / 貼り付け</td></tr>
             <tr><td>Delete</td><td>選択項目をゴミ箱へ移動</td></tr>
             <tr><td>Shift+↑ / Shift+↓</td><td>選択範囲を拡大 / 縮小</td></tr>
