@@ -89,3 +89,7 @@ cd dpane
 - [起動時間の計測手順](specification/起動時間計測手順.md)
 
 旧称は `dir-group-webUI` です。起動スクリプトはシステムのPythonから `app.py` を呼び出します。`dpane` をPATHへインストールする設定は含まれていません。
+
+## ライセンス
+
+[MIT License](LICENSE)（Copyright © 2026 tuyomori-cyber）
