@@ -7,6 +7,7 @@ from time import perf_counter
 
 _IMPORT_START = perf_counter()
 import json
+import errno
 import os
 import subprocess
 import sys
@@ -30,6 +31,18 @@ import bookmarks  # noqa: E402
 import keybindings  # noqa: E402
 
 _IMPORT_END = perf_counter()
+
+
+def operation_failure_details(failures: list[tuple[Path, Exception]], cut: bool = False) -> str:
+    """Format every failed item without losing the underlying error."""
+    lines = []
+    for path, error in failures:
+        if cut and isinstance(error, OSError) and error.errno == errno.EXDEV:
+            reason = "異なるファイルシステム間では、この上書き移動はできません。"
+        else:
+            reason = str(error) or type(error).__name__
+        lines.append(f"{path}\n{reason}")
+    return "\n\n".join(lines)
 
 
 class StartupTiming:
@@ -859,8 +872,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                         completed, failures = result
                         response["message"] = f"{'移動' if cut else 'コピー'}しました: {len(completed)} 件"
                         if failures:
-                            names = ", ".join(path.name for path, _error in failures[:3])
-                            response["error"] = f"{len(completed)} 件成功、{len(failures)} 件の操作に失敗しました: {names}"
+                            response["error"] = f"{len(completed)} 件成功、{len(failures)} 件の操作に失敗しました。"
+                            response["errorDetails"] = operation_failure_details(failures, cut)
                         if cut:
                             failed_paths = {path for path, _error in failures}
                             remaining = [(path, expected) for path, expected, _mode, _target, _source in plans
@@ -870,8 +883,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
                         completed, failures = result
                         response["message"] = f"ゴミ箱へ移動しました: {len(completed)} 件"
                         if failures:
-                            names = ", ".join(path.name for path, _error in failures[:3])
-                            response["error"] = f"{len(completed)} 件成功、{len(failures)} 件の操作に失敗しました: {names}"
+                            response["error"] = f"{len(completed)} 件成功、{len(failures)} 件の操作に失敗しました。"
+                            response["errorDetails"] = operation_failure_details(failures)
                     if action == "rename":
                         response.update({"selectedNames": [result.name], "selectedDirectory": str(result.parent)})
                         if self.file_clipboard is not None:
@@ -886,8 +899,29 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             self.send_to_ui("receiveFileOperation", {"paneId": pane_id, "error": str(error)})
 
     def finish_file_operation(self, response: dict[str, object]) -> bool:
-        self.file_operation_busy = False
         self.send_to_ui("receiveFileOperation", response)
+        if response.get("errorDetails"):
+            dialog = Gtk.Dialog(title="ファイル操作の失敗", transient_for=self, modal=True)
+            dialog.add_button("閉じる", Gtk.ResponseType.CLOSE)
+            dialog.set_default_size(600, 320)
+            box = dialog.get_content_area()
+            box.set_spacing(8)
+            box.set_border_width(12)
+            box.pack_start(Gtk.Label(label=str(response["error"]), xalign=0), False, False, 0)
+            scroll = Gtk.ScrolledWindow()
+            view = Gtk.TextView()
+            view.set_editable(False)
+            view.set_cursor_visible(False)
+            view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            view.get_buffer().set_text(str(response["errorDetails"]))
+            scroll.add(view)
+            box.pack_start(scroll, True, True, 0)
+            dialog.show_all()
+            try:
+                dialog.run()
+            finally:
+                dialog.destroy()
+        self.file_operation_busy = False
         return False
 
     def send_to_ui(self, callback: str, response: object) -> None:

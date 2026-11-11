@@ -1,4 +1,5 @@
 import json
+import errno
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,6 +66,35 @@ class WorkflowSafetyTests(unittest.TestCase):
         self.assertFalse((self.dst / "second").exists())
         self.assertEqual([path for path, _ in self.window.file_clipboard[0]], [self.second])
         self.assertIn("1 件成功、1 件", idle.call_args.args[1]["error"])
+        self.assertIn(str(self.second), idle.call_args.args[1]["errorDetails"])
+        self.assertIn("simulated failure", idle.call_args.args[1]["errorDetails"])
+
+    def test_cross_filesystem_failure_explains_reason_and_preserves_files(self):
+        target = self.dst / "first"
+        target.write_text("destination")
+        self.window.file_clipboard = ([(self.first, app.file_operations.identity(self.first))], True)
+        dialog = Mock()
+        dialog.run.return_value = app.Gtk.ResponseType.YES
+        with patch.object(app.Gtk, "MessageDialog", return_value=dialog), \
+             patch.object(app.threading, "Thread", ImmediateThread), patch.object(app.GLib, "idle_add") as idle, \
+             patch.object(app.file_operations.os, "replace", side_effect=OSError(errno.EXDEV, "cross-device")):
+            app.DirGroupWindow.on_file_operation_request(self.window, None, self.request)
+        self.assertIn("異なるファイルシステム", idle.call_args.args[1]["errorDetails"])
+        self.assertEqual(self.first.read_text(), "first data")
+        self.assertEqual(target.read_text(), "destination")
+
+    def test_trash_failure_details_include_every_item(self):
+        self.request.get_js_value.return_value.to_json.return_value = json.dumps(
+            {"paneId": "1", "action": "trash", "paths": [str(self.first), str(self.second)]})
+        dialog = Mock()
+        dialog.run.return_value = app.Gtk.ResponseType.OK
+        with patch.object(app.Gtk, "MessageDialog", return_value=dialog), \
+             patch.object(app.threading, "Thread", ImmediateThread), patch.object(app.GLib, "idle_add") as idle, \
+             patch.object(app.file_operations, "trash", side_effect=[OSError("first error"), OSError("second error")]):
+            app.DirGroupWindow.on_file_operation_request(self.window, None, self.request)
+        details = idle.call_args.args[1]["errorDetails"]
+        for item in (str(self.first), str(self.second), "first error", "second error"):
+            self.assertIn(item, details)
 
     def test_trash_confirmation_cancel_never_invokes_trash(self):
         self.request.get_js_value.return_value.to_json.return_value = json.dumps(
