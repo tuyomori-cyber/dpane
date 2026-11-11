@@ -51,6 +51,7 @@
   }
   const workspace = document.querySelector("#workspace");
   const MAX_PANES = 8;
+  const ENTRY_COLUMN_MIN_WIDTH = 240;
   const defaultPaths = ["~", "~/Downloads", "~/Documents", "~/Pictures"];
   const panes = new Map();
   const scaleInput = document.querySelector("#ui-scale");
@@ -140,6 +141,7 @@
   }
 
   function requestDirectory(pane, path, historyAction = "navigate") {
+    closeIncrementalSearch(pane);
     const requestId = ++pane.directoryRequestId;
     pane.pendingDirectory = { id: requestId, historyAction };
     pane.backButton.disabled = true;
@@ -361,6 +363,7 @@
   }
 
   function setActivePane(pane) {
+    if (activePane && activePane !== pane) closeIncrementalSearch(activePane);
     activePane = pane;
     panes.forEach(item => item.element.classList.toggle("focused", item === pane));
   }
@@ -450,6 +453,7 @@
         const position = (horizontal ? event.clientX - bounds.left : event.clientY - bounds.top) - 3;
         node.ratio = Math.max(0.1, Math.min(0.9, position / total));
         applyRatio();
+        requestAnimationFrame(() => visiblePanes().forEach(updateEntryColumnCount));
       });
       divider.addEventListener("lostpointercapture", () => divider.classList.remove("dragging"));
       first.append(render(node.first));
@@ -462,6 +466,7 @@
       pane.element.querySelector(".pane-title").textContent = `Pane ${index + 1}`;
     });
     updateAddButtons();
+    requestAnimationFrame(() => visiblePanes().forEach(updateEntryColumnCount));
   }
 
   function addPane(direction, source = activePane, path = source?.path, load = true) {
@@ -581,6 +586,7 @@
     const next = firstPane(siblingOf(layout, closing));
     layout = removePane(layout, closing);
     panes.delete(closing.id);
+    closing.entryResizeObserver?.disconnect();
     hideCompletion(closing);
     closing.completion.list.remove();
     renderLayout();
@@ -603,9 +609,40 @@
     return pane.entries.filter(entry => pane.selectedNames.has(entry.name));
   }
 
+  function closeIncrementalSearch(pane) {
+    if (!pane?.searchBox) return;
+    pane.searchBox.hidden = true;
+    pane.searchInput.value = "";
+    pane.searchMatches = [];
+  }
+
+  function updateIncrementalSearch(pane) {
+    const query = pane.searchInput.value.normalize("NFC").toLowerCase();
+    pane.searchMatches = query ? pane.entries.flatMap((entry, index) =>
+      entry.name.normalize("NFC").toLowerCase().startsWith(query) ? [index] : []) : [];
+    if (pane.searchMatches.length) selectEntry(pane, pane.searchMatches[0]);
+  }
+
+  function openIncrementalSearch(pane, initial = "") {
+    pane.searchBox.hidden = false;
+    pane.searchInput.value = initial;
+    updateIncrementalSearch(pane);
+    pane.searchInput.focus({ preventScroll: true });
+    pane.searchInput.setSelectionRange(initial.length, initial.length);
+  }
+
+  function moveSearchMatch(pane, direction) {
+    const matches = pane.searchMatches;
+    if (!matches.length) return;
+    const current = matches.indexOf(pane.selectedIndex);
+    const next = current < 0 ? (direction > 0 ? 0 : matches.length - 1)
+      : (current + direction + matches.length) % matches.length;
+    selectEntry(pane, matches[next]);
+  }
+
   function defaultStatus(pane) {
     const selected = pane.selectedNames.size ? ` · ${pane.selectedNames.size} 件選択` : "";
-    const hints = showShortcutHints ? ` · ↑↓ / Enter / Backspace / F5 · ${keybindings.nextPane} / ${Array.from({ length: MAX_PANES }, (_, index) => keybindings[`pane${index + 1}`]).join(" / ")}` : "";
+    const hints = showShortcutHints ? ` · ↑↓←→ / Enter / Backspace / F5 · ${keybindings.nextPane} / ${Array.from({ length: MAX_PANES }, (_, index) => keybindings[`pane${index + 1}`]).join(" / ")}` : "";
     return `${pane.entries.length} 件${pane.truncated ? "（取得上限 1,000 件）" : ""}${selected}${hints}`;
   }
 
@@ -647,11 +684,41 @@
     updateSelection(pane, scroll);
   }
 
-  function moveSelection(pane, offset, extend = false) {
+  function visualColumns(pane) {
+    const columns = [];
+    [...pane.list.querySelectorAll(".entry")].forEach((button, index) => {
+      const rect = button.getBoundingClientRect();
+      let column = columns.find(item => Math.abs(item.left - rect.left) < 2);
+      if (!column) {
+        column = { left: rect.left, items: [] };
+        columns.push(column);
+      }
+      column.items.push({ index, top: rect.top });
+    });
+    columns.sort((left, right) => left.left - right.left);
+    columns.forEach(column => column.items.sort((top, bottom) => top.top - bottom.top || top.index - bottom.index));
+    return columns;
+  }
+
+  function moveSelection(pane, direction, extend = false) {
     if (!pane.entries.length) return;
-    const current = pane.selectedIndex >= 0 ? pane.selectedIndex : (offset > 0 ? -1 : pane.entries.length);
-    const next = Math.max(0, Math.min(current + offset, pane.entries.length - 1));
-    selectEntry(pane, next, true, extend ? { shiftKey: true } : null);
+    if (pane.selectedIndex < 0) {
+      const first = direction === "up" || direction === "left" ? pane.entries.length - 1 : 0;
+      selectEntry(pane, first, true, extend ? { shiftKey: true } : null);
+      return;
+    }
+    const columns = visualColumns(pane);
+    const columnIndex = columns.findIndex(column => column.items.some(item => item.index === pane.selectedIndex));
+    if (columnIndex < 0) return;
+    const rowIndex = columns[columnIndex].items.findIndex(item => item.index === pane.selectedIndex);
+    let next;
+    if (direction === "up") next = columns[columnIndex].items[rowIndex - 1];
+    else if (direction === "down") next = columns[columnIndex].items[rowIndex + 1];
+    else {
+      const adjacent = columns[columnIndex + (direction === "left" ? -1 : 1)];
+      next = adjacent?.items[rowIndex];
+    }
+    if (next) selectEntry(pane, next.index, true, extend ? { shiftKey: true } : null);
   }
 
   function setupEntryDrag(button, pane, index) {
@@ -730,6 +797,13 @@
     });
   }
 
+  function updateEntryColumnCount(pane) {
+    const width = pane.list.clientWidth;
+    const count = pane.showModified || !Number.isFinite(width) ? 1
+      : Math.max(1, Math.min(3, Math.floor((width + 3) / (ENTRY_COLUMN_MIN_WIDTH + 3))));
+    pane.list.style.setProperty("--entry-columns", String(count));
+  }
+
   function formatModified(seconds) {
     if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "—";
     const date = new Date(seconds * 1000);
@@ -741,6 +815,8 @@
   function toggleModifiedTimes(pane) {
     pane.showModified = !pane.showModified;
     pane.timeButton.setAttribute("aria-pressed", String(pane.showModified));
+    pane.list.classList.toggle("show-modified", pane.showModified);
+    updateEntryColumnCount(pane);
     pane.list.querySelectorAll(".entry").forEach((button, index) => {
       updateEntryTimestamp(button, pane.entries[index], pane.showModified);
     });
@@ -785,6 +861,22 @@
       return;
     }
     if (event.isComposing) return;
+    if (event.target === activePane.searchInput) {
+      if (matchesShortcut(event, "nextPane") || matchesShortcut(event, "previousPane")) {
+        event.preventDefault(); moveActivePane(matchesShortcut(event, "nextPane") ? 1 : -1); return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault(); closeIncrementalSearch(activePane); focusPane(activePane);
+      } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault(); moveSearchMatch(activePane, event.key === "ArrowDown" ? 1 : -1);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        const hasMatch = activePane.searchMatches.length > 0;
+        closeIncrementalSearch(activePane); focusPane(activePane);
+        if (hasMatch) activateSelectedEntry(activePane);
+      }
+      return;
+    }
     if (matchesShortcut(event, "showShortcuts")) {
       event.preventDefault(); openShortcuts(); return;
     }
@@ -804,6 +896,13 @@
     for (const [name, action] of [["chooseApplication", "choose"], ["execute", "execute"]]) {
       if (matchesShortcut(event, name)) { event.preventDefault(); menu.hidden = true; fileAction(activePane, action); return; }
     }
+    const onList = event.target === activePane.element || !!event.target.closest(".entry");
+    if (onList && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "f") {
+      event.preventDefault(); openIncrementalSearch(activePane); return;
+    }
+    if (onList && !event.ctrlKey && !event.altKey && !event.metaKey && event.key.length === 1 && event.key !== " ") {
+      event.preventDefault(); openIncrementalSearch(activePane, event.key); return;
+    }
     if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && ["c", "x", "v"].includes(event.key.toLowerCase())) {
       event.preventDefault();
       const action = { c: "copy", x: "cut", v: "paste" }[event.key.toLowerCase()];
@@ -817,8 +916,10 @@
       event.preventDefault();
       fileOperation(activePane, "rename");
     }
-    else if (event.key === "ArrowDown") { event.preventDefault(); moveSelection(activePane, 1, event.shiftKey); }
-    else if (event.key === "ArrowUp") { event.preventDefault(); moveSelection(activePane, -1, event.shiftKey); }
+    else if (event.key === "ArrowDown") { event.preventDefault(); moveSelection(activePane, "down", event.shiftKey); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); moveSelection(activePane, "up", event.shiftKey); }
+    else if (event.key === "ArrowLeft") { event.preventDefault(); moveSelection(activePane, "left", event.shiftKey); }
+    else if (event.key === "ArrowRight") { event.preventDefault(); moveSelection(activePane, "right", event.shiftKey); }
     else if (event.key === "Enter") { event.preventDefault(); activateSelectedEntry(activePane); }
     else if (event.key === "Backspace") {
       event.preventDefault();
@@ -865,6 +966,21 @@
     pane.timeButton.addEventListener("click", () => toggleModifiedTimes(pane));
     pane.list = element.querySelector(".entry-list");
     setupBlankSelection(pane);
+    pane.searchBox = document.createElement("div");
+    pane.searchBox.className = "incremental-search";
+    pane.searchBox.hidden = true;
+    pane.searchInput = document.createElement("input");
+    pane.searchInput.setAttribute("aria-label", "一覧の名前を検索");
+    pane.searchBox.append(pane.searchInput);
+    element.append(pane.searchBox);
+    pane.searchMatches = [];
+    pane.searchInput.addEventListener("input", event => { if (!event.isComposing) updateIncrementalSearch(pane); });
+    pane.searchInput.addEventListener("compositionend", () => updateIncrementalSearch(pane));
+    updateEntryColumnCount(pane);
+    if (typeof ResizeObserver === "function") {
+      pane.entryResizeObserver = new ResizeObserver(() => updateEntryColumnCount(pane));
+      pane.entryResizeObserver.observe(pane.list);
+    }
     element.addEventListener("dragover", event => {
       if (!paneDrag || !panes.has(paneDrag.source.id)) return;
       event.preventDefault();
@@ -903,7 +1019,8 @@
     });
     element.addEventListener("pointerdown", event => {
       setActivePane(pane);
-      if (!event.target.closest(".path")) focusPane(pane);
+      if (!pane.searchBox.contains(event.target)) closeIncrementalSearch(pane);
+      if (!event.target.closest(".path") && !pane.searchBox.contains(event.target)) focusPane(pane);
     });
     element.addEventListener("focusin", () => setActivePane(pane));
     panes.set(pane.id, pane);
@@ -936,6 +1053,7 @@
       return button;
     }));
     updateSelection(pane, false);
+    if (!pane.searchBox.hidden) updateIncrementalSearch(pane);
   }
 
   window.dirGroup = {

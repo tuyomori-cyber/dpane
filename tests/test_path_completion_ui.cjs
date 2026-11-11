@@ -4,9 +4,19 @@ const vm = require("vm");
 
 class Element {
   constructor(tag = "div") {
-    this.tag = tag; this.children = []; this.events = {}; this.dataset = {}; this.style = {}; this.hidden = false;
+    const customProperties = new Map();
+    this.tag = tag; this.children = []; this.events = {}; this.dataset = {}; this.style = new Proxy({
+      setProperty(name, value) { customProperties.set(name, value); },
+      getPropertyValue(name) { return customProperties.get(name) || ""; }
+    }, { set(target, name, value) { if (String(name).startsWith("--")) throw new Error("Use setProperty for custom CSS properties"); target[name] = value; return true; } });
+    this.hidden = false;
     this.value = ""; this.selectionStart = this.selectionEnd = 0; this.className = ""; this.attributes = {};
-    this.classList = { toggle() {}, add() {}, remove() {} };
+    const classes = new Set();
+    this.classList = {
+      toggle(name, force) { const enabled = force === undefined ? !classes.has(name) : force; if (enabled) classes.add(name); else classes.delete(name); return enabled; },
+      add(...names) { names.forEach(name => classes.add(name)); }, remove(...names) { names.forEach(name => classes.delete(name)); },
+      contains(name) { return classes.has(name); }
+    };
   }
   set innerHTML(value) {
     this.parts = {};
@@ -267,6 +277,7 @@ input.focus();
 type("~/editing");
 pane.querySelector(".toggle-times").fire("click");
 assert.equal(pane.querySelector(".toggle-times").attributes["aria-pressed"], "true");
+assert(pane.querySelector(".entry-list").classList.contains("show-modified"));
 assert.match(pane.querySelector(".entry-list").children[0].children[0].textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
 assert.equal(pane.querySelector(".entry-list").children[1].children[0].textContent, "—");
 assert.equal(secondPane.querySelector(".entry-list").children[0].children.length, 0);
@@ -274,6 +285,7 @@ const timeShortcut = { target: input, key: "t", ctrlKey: true, preventDefault() 
 for (const handler of document.events.keydown) handler(timeShortcut);
 assert(timeShortcut.prevented);
 assert.equal(pane.querySelector(".toggle-times").attributes["aria-pressed"], "false");
+assert(!pane.querySelector(".entry-list").classList.contains("show-modified"));
 assert.equal(pane.querySelector(".entry-list").children[0].children.length, 0);
 assert.strictEqual(document.activeElement, input);
 assert.equal(input.value, "~/editing");
@@ -313,6 +325,87 @@ for (const handler of document.events.keydown) handler(switchPane);
 assert(switchPane.prevented);
 assert.equal(document.activeElement.dataset.paneId, "2");
 const targetedPane = find(workspace, node => node.className === "pane" && node.dataset.paneId === "1")[0];
+window.dirGroup.receiveDirectory({ paneId: "1", path: "/home/test", entries: [
+  { name: "a", directory: false }, { name: "b", directory: false }, { name: "c", directory: false },
+  { name: "d", directory: false }, { name: "e", directory: false }, { name: "f", directory: false }
+] });
+const gridEntries = targetedPane.querySelector(".entry-list").children;
+[[0, 0], [250, 0], [0, 30], [250, 30], [0, 60], [500, 0]].forEach(([left, top], index) => {
+  gridEntries[index].getBoundingClientRect = () => ({ left, right: left + 200, top, bottom: top + 20 });
+});
+const selectedGridEntry = () => [...gridEntries].find(entry => entry.classList.contains("selected"));
+targetedPane.fire("pointerdown");
+gridEntries[2].fire("click");
+const gridKey = key => {
+  const event = { target: targetedPane, key, preventDefault() { this.prevented = true; } };
+  for (const handler of document.events.keydown) handler(event);
+  assert(event.prevented);
+};
+gridKey("ArrowRight");
+assert.strictEqual(selectedGridEntry(), gridEntries[3]);
+gridKey("ArrowDown");
+assert.strictEqual(selectedGridEntry(), gridEntries[3]); // The next row in this column does not exist.
+gridKey("ArrowLeft");
+assert.strictEqual(selectedGridEntry(), gridEntries[2]);
+gridEntries[4].fire("click");
+gridKey("ArrowRight");
+assert.strictEqual(selectedGridEntry(), gridEntries[4]); // The adjacent column has no matching row.
+const gridList = targetedPane.querySelector(".entry-list");
+gridList.clientWidth = 500;
+targetedPane.querySelector(".toggle-times").fire("click");
+assert.equal(gridList.style.getPropertyValue("--entry-columns"), "1");
+targetedPane.querySelector(".toggle-times").fire("click");
+assert.equal(gridList.style.getPropertyValue("--entry-columns"), "2");
+window.dirGroup.receiveDirectory({ paneId: "1", path: "/home/test", entries: [
+  { name: "Docs", directory: true }, { name: "Downloads", directory: true },
+  { name: "docs.txt", directory: false }, { name: "日本語.txt", directory: false }
+] });
+const searchBox = targetedPane.children.find(child => child.className === "incremental-search");
+const searchInput = searchBox.children[0];
+assert.equal(searchInput.attributes.placeholder, undefined);
+const searchEntries = targetedPane.querySelector(".entry-list").children;
+const searchKey = (target, key, props = {}) => {
+  const event = { target, key, ...props, preventDefault() { this.prevented = true; } };
+  for (const handler of document.events.keydown) handler(event);
+  return event;
+};
+targetedPane.fire("pointerdown");
+assert(searchKey(targetedPane, "d").prevented);
+assert(!searchBox.hidden);
+assert.equal(searchInput.value, "d");
+assert(searchEntries[0].classList.contains("selected"));
+searchInput.value = "DOC";
+searchInput.fire("input");
+assert(searchEntries[0].classList.contains("selected"));
+searchKey(searchInput, "ArrowDown");
+assert(searchEntries[2].classList.contains("selected"));
+searchKey(searchInput, "ArrowDown");
+assert(searchEntries[0].classList.contains("selected"));
+searchKey(searchInput, "ArrowUp");
+assert(searchEntries[2].classList.contains("selected"));
+searchInput.value = "missing";
+searchInput.fire("input");
+assert(searchEntries[2].classList.contains("selected"));
+const opensBeforeNoMatch = openCalls.length;
+searchKey(searchInput, "Enter");
+assert.equal(openCalls.length, opensBeforeNoMatch);
+assert(searchBox.hidden);
+searchKey(targetedPane, "f", { ctrlKey: true });
+assert(!searchBox.hidden);
+searchInput.value = "日本語";
+searchInput.fire("input", { isComposing: true });
+assert(searchEntries[2].classList.contains("selected"));
+searchInput.fire("compositionend");
+assert(searchEntries[3].classList.contains("selected"));
+searchKey(searchInput, "Escape");
+assert(searchBox.hidden);
+assert(searchEntries[3].classList.contains("selected"));
+searchKey(targetedPane, "d");
+searchInput.value = "docs.txt";
+searchInput.fire("input");
+searchKey(searchInput, "Enter");
+assert.equal(openCalls.at(-1).path, "/home/test/docs.txt");
+assert(searchBox.hidden);
 targetedPane.querySelector(".split-horizontal").fire("click");
 assert.equal(directoryCalls.at(-1).path, "/home/test");
 assert.equal(document.activeElement.dataset.paneId, "4");
