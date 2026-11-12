@@ -1,0 +1,8 @@
+#!/bin/sh
+# Separate settings and GTK application identity from the daily Dpane instance.
+set -eu
+base="${XDG_CACHE_HOME:-$HOME/.cache}/dpane-kitty-experiment"
+mkdir -p "$base/config" "$base/data"
+export XDG_CONFIG_HOME="$base/config" XDG_DATA_HOME="$base/data"
+cd "$(dirname "$0")"
+exec ./dpane "$@"

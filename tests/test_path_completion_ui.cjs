@@ -20,7 +20,9 @@ class Element {
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up", "back", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle", "pane-title"]) {
+    if (value.includes("<pre>")) this.parts.re = new Element("pre");
+    if (value.includes("<textarea")) this.parts.extarea = new Element("textarea");
+    for (const name of ["path", "status", "entry-list", "up", "back", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle", "pane-title", "kitty-toggle"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }
@@ -63,6 +65,8 @@ const calls = [], directoryCalls = [], closeCalls = [], scaleCalls = [], operati
 const bookmarkCalls = [], resetCalls = [];
 const window = { dpaneKeybindings: { splitRight: "Ctrl+Shift+L", splitDown: "Ctrl+Shift+J", closePane: "Ctrl+Shift+W", toggleTimes: "Ctrl+T", showShortcuts: "Ctrl+K", nextPane: "Ctrl+Tab", previousPane: "Ctrl+Shift+Tab", pane1: "Alt+1", pane2: "Alt+2", pane3: "Alt+3", pane4: "Alt+4", pane5: "Alt+5", pane6: "Alt+6", pane7: "Alt+7", pane8: "Alt+8", chooseApplication: "Ctrl+Shift+O", execute: "Ctrl+Shift+E" }, innerWidth: 1200, innerHeight: 800, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }, webkit: { messageHandlers: { bookmarks: { postMessage: value => bookmarkCalls.push(value) }, directoryListing: { postMessage: value => directoryCalls.push(value) }, pathCompletion: { postMessage: value => calls.push(value) }, closeWindow: { postMessage: value => closeCalls.push(value) }, uiScale: { postMessage: value => scaleCalls.push(value) }, saveViewSettings: { postMessage: value => settingsCalls.push(value) }, fileOperation: { postMessage: value => operationCalls.push(value) }, startupPaint: { postMessage: value => paintCalls.push(value) }, startupDetail: { postMessage: value => detailCalls.push(value) } } } };
 const openCalls = [];
+const kittyCalls = [];
+window.webkit.messageHandlers.kittyMirror = { postMessage: value => kittyCalls.push(value) };
 window.webkit.messageHandlers.resetKeybindings = { postMessage: value => resetCalls.push(value) };
 window.webkit.messageHandlers.fileOpen = { postMessage: value => openCalls.push(value) };
 const timers = new Map(); let nextTimer = 0;
@@ -559,4 +563,18 @@ for (const handler of document.events.keydown) handler(customShortcut);
 assert.equal(ids["#shortcut-page"].hidden, true);
 window.dirGroup.receiveKeybindingsReset({ bindings: window.dpaneKeybindings });
 assert.equal(ids["#shortcut-menu-key"].textContent, "Ctrl+K");
-console.log("Path completion UI checks passed.");
+const kittyInput = replyPane.children.find(child => child.className === "kitty-mirror").querySelector("textarea");
+kittyInput.value = "echo こんにちは";
+kittyInput.fire("input");
+kittyInput.fire("keydown", {key: "Backspace"});
+assert.equal(kittyCalls.length, 0);
+kittyInput.value = "echo こん";
+const enter = kittyInput.fire("keydown", {key: "Enter"});
+assert(enter.prevented);
+assert.equal(kittyCalls.at(-1).data, "echo こん\r");
+assert.equal(kittyInput.value, "");
+kittyInput.value = "unsubmitted";
+kittyInput.fire("keydown", {key: "c", ctrlKey: true});
+assert.equal(kittyCalls.at(-1).data, "\x03");
+assert.equal(kittyInput.value, "");
+console.log("Path completion and kitty input UI checks passed.");

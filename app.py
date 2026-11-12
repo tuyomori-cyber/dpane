@@ -29,6 +29,7 @@ import file_operations  # noqa: E402
 import path_completion  # noqa: E402
 import bookmarks  # noqa: E402
 import keybindings  # noqa: E402
+import kitty_mirror  # noqa: E402
 
 _IMPORT_END = perf_counter()
 
@@ -298,6 +299,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         self.initial_listing_ids = set()
         self.startup_script_traced = set()
         self.connect("delete-event", self.on_window_delete)
+        self.kitty_mirror = kitty_mirror.KittyMirror(lambda data: GLib.idle_add(self.send_to_ui, "receiveKitty", data))
+        self.connect("destroy", lambda *_: self.kitty_mirror.shutdown())
 
         manager = WebKit2.UserContentManager()
         if self.startup_reply:
@@ -326,6 +329,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.START, None, None,
         ))
+        manager.register_script_message_handler("kittyMirror")
+        manager.connect("script-message-received::kittyMirror", self.on_kitty_mirror)
         manager.register_script_message_handler("directoryListing")
         manager.connect("script-message-received::directoryListing", self.on_directory_request)
         manager.register_script_message_handler("fileOpen")
@@ -376,6 +381,17 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             return False
         decision.ignore()
         return True
+
+    def on_kitty_mirror(self, _manager, result) -> None:
+        try:
+            request = json.loads(result.get_js_value().to_json(0))
+            pane = request.get("paneId")
+            action = request.get("action")
+            if isinstance(pane, str) and pane.isdecimal() and action in {"start", "close", "input", "resize", "poll"}:
+                self.kitty_mirror.submit(pane, action, path=request.get("path"), data=request.get("data"),
+                                         cols=request.get("cols"), rows=request.get("rows"))
+        except (ValueError, TypeError, AttributeError):
+            pass
 
     def on_directory_request(self, _manager, result, reply=None) -> None:
         initial = False
@@ -955,7 +971,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
 
 class DirGroupApplication(Gtk.Application):
     def __init__(self) -> None:
-        super().__init__(application_id="local.dirgroup.webui")
+        super().__init__(application_id="local.dirgroup.kittyexperiment")
 
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)

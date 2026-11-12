@@ -585,6 +585,7 @@
     }
     const next = firstPane(siblingOf(layout, closing));
     layout = removePane(layout, closing);
+    if (closing.kittyActive) stopKitty(closing);
     panes.delete(closing.id);
     closing.entryResizeObserver?.disconnect();
     hideCompletion(closing);
@@ -860,6 +861,7 @@
       focusPane(activePane);
       return;
     }
+    if (event.target.closest(".kitty-mirror")) return;
     if (event.isComposing) return;
     if (event.target === activePane.searchInput) {
       if (matchesShortcut(event, "nextPane") || matchesShortcut(event, "previousPane")) {
@@ -930,6 +932,41 @@
     }
   }
 
+  function kittySend(pane, action, extra = {}) {
+    window.webkit.messageHandlers.kittyMirror.postMessage({paneId: pane.id, action, ...extra});
+  }
+  function stopKitty(pane) {
+    pane.kittyActive = false;
+    clearInterval(pane.kittyTimer);
+    pane.kittyObserver?.disconnect();
+    kittySend(pane, "close");
+    pane.kittyView.hidden = true;
+    pane.list.hidden = false;
+    pane.element.classList.remove("kitty-mode");
+    pane.element.querySelector(".kitty-toggle").textContent = "端末";
+  }
+  function startKitty(pane) {
+    pane.kittyActive = true;
+    pane.kittyPending = false;
+    pane.kittyView.hidden = false;
+    pane.list.hidden = true;
+    pane.element.classList.add("kitty-mode");
+    pane.element.querySelector(".kitty-toggle").textContent = "一覧";
+    pane.kittyScreen.textContent = "kitty 起動中…";
+    kittySend(pane, "start", {path: pane.path});
+    pane.kittyInput.focus();
+  }
+  function resizeKitty(pane) {
+    if (!pane.kittyActive) return;
+    const style = getComputedStyle(pane.kittyScreen);
+    const line = parseFloat(style.lineHeight) || 18;
+    const size = parseFloat(style.fontSize) || 14;
+    const cols = Math.max(10, Math.min(300, Math.floor(pane.kittyScreen.clientWidth / (size * 0.602))));
+    const rows = Math.max(3, Math.min(150, Math.floor(pane.kittyScreen.clientHeight / line)));
+    const key = `${cols},${rows}`;
+    if (pane.kittySize !== key) { pane.kittySize = key; kittySend(pane, "resize", {cols, rows}); }
+  }
+
   function makePane(path, selectInitial = true, load = true) {
     const id = String(nextPaneId++);
     const element = document.createElement("section");
@@ -943,6 +980,7 @@
         <button class="up" title="親フォルダへ">↑</button>
         <button class="bookmark-toggle" title="ブックマークに登録" aria-label="ブックマークに登録">☆</button>
         <input class="path" aria-label="フォルダのパス">
+        <button class="kitty-toggle" title="kitty実験">端末</button>
         <button class="split-horizontal" title="右にペインを追加 (${keybindings.splitRight})" aria-label="右にペインを追加">||</button>
         <button class="split-vertical" title="下にペインを追加 (${keybindings.splitDown})" aria-label="下にペインを追加">＝</button>
         <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
@@ -965,6 +1003,29 @@
     pane.timeButton = element.querySelector(".toggle-times");
     pane.timeButton.addEventListener("click", () => toggleModifiedTimes(pane));
     pane.list = element.querySelector(".entry-list");
+    pane.kittyView = document.createElement("div");
+    pane.kittyView.className = "kitty-mirror";
+    pane.kittyView.hidden = true;
+    pane.kittyView.innerHTML = '<pre></pre><textarea aria-label="kittyへの入力" spellcheck="false" placeholder="ここに入力"></textarea>';
+    element.append(pane.kittyView);
+    pane.kittyScreen = pane.kittyView.querySelector("pre");
+    pane.kittyInput = pane.kittyView.querySelector("textarea");
+    pane.kittyInput.maxLength = 4095;
+    pane.kittyInput.placeholder = "コマンドを入力し Enter で送信";
+    pane.kittyInput.addEventListener("keydown", event => {
+      if (event.isComposing) return;
+      if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        const data = pane.kittyInput.value + "\r";
+        pane.kittyInput.value = "";
+        kittySend(pane, "input", {data});
+      } else if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && ["c", "d"].includes(event.key.toLowerCase())) {
+        event.preventDefault();
+        if (event.key.toLowerCase() === "c") pane.kittyInput.value = "";
+        kittySend(pane, "input", {data: event.key.toLowerCase() === "c" ? "\x03" : "\x04"});
+      }
+    });
+    element.querySelector(".kitty-toggle").addEventListener("click", () => pane.kittyActive ? stopKitty(pane) : startKitty(pane));
     setupBlankSelection(pane);
     pane.searchBox = document.createElement("div");
     pane.searchBox.className = "incremental-search";
@@ -1020,7 +1081,7 @@
     element.addEventListener("pointerdown", event => {
       setActivePane(pane);
       if (!pane.searchBox.contains(event.target)) closeIncrementalSearch(pane);
-      if (!event.target.closest(".path") && !pane.searchBox.contains(event.target)) focusPane(pane);
+      if (!event.target.closest(".path, .kitty-mirror") && !pane.searchBox.contains(event.target)) focusPane(pane);
     });
     element.addEventListener("focusin", () => setActivePane(pane));
     panes.set(pane.id, pane);
@@ -1057,6 +1118,25 @@
   }
 
   window.dirGroup = {
+    receiveKitty(response) {
+      const pane = panes.get(response.paneId);
+      if (!pane || !pane.kittyActive) return;
+      if (response.error) {
+        clearInterval(pane.kittyTimer);
+        pane.kittyScreen.textContent = `kitty エラー: ${response.error}`;
+      } else if (response.started) {
+        pane.kittySize = null;
+        pane.kittyObserver = new ResizeObserver(() => resizeKitty(pane));
+        pane.kittyObserver.observe(pane.kittyScreen);
+        resizeKitty(pane);
+        pane.kittyTimer = setInterval(() => {
+          if (!pane.kittyPending) { pane.kittyPending = true; kittySend(pane, "poll"); }
+        }, 50);
+      } else if (typeof response.text === "string") {
+        pane.kittyPending = false;
+        pane.kittyScreen.textContent = response.text;
+      }
+    },
     receiveDirectories(responses) {
       responses.forEach(response => window.dirGroup.receiveDirectory(response));
     },

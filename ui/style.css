@@ -96,3 +96,9 @@ button:disabled:hover { background: #303746; border-color: #4b566a; }
 .help-page th, .help-page td { padding: 7px 9px; border-bottom: 1px solid #3e5066; text-align: left; }
 .help-page th { color: #cce6ff; background: #2b394c; }
 .help-page td:first-child { width: 40%; color: #8fc7ff; font-family: ui-monospace, monospace; white-space: nowrap; }
+
+/* Experimental kitty screen snapshot mirror. */
+.pane.kitty-mode .entry-list, .kitty-mirror[hidden] { display: none; }
+.kitty-mirror { min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: #101216; }
+.kitty-mirror pre { flex: 1 1 auto; min-height: 0; overflow: hidden; margin: 0; padding: 0; color: #ddd; font: 14px/18px monospace; white-space: pre; }
+.kitty-mirror textarea { flex: 0 0 26px; width: 100%; resize: none; box-sizing: border-box; color: white; background: #282d35; }
