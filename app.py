@@ -29,6 +29,7 @@ import file_operations  # noqa: E402
 import path_completion  # noqa: E402
 import bookmarks  # noqa: E402
 import keybindings  # noqa: E402
+import terminal_pty  # noqa: E402
 
 _IMPORT_END = perf_counter()
 
@@ -298,6 +299,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
         self.initial_listing_ids = set()
         self.startup_script_traced = set()
         self.connect("delete-event", self.on_window_delete)
+        self.terminals = terminal_pty.TerminalSessions(lambda data: self.send_to_ui("receiveTerminal", data))
+        self.connect("destroy", lambda *_: self.terminals.shutdown())
 
         manager = WebKit2.UserContentManager()
         if self.startup_reply:
@@ -326,6 +329,8 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.START, None, None,
         ))
+        manager.register_script_message_handler("terminal")
+        manager.connect("script-message-received::terminal", self.on_terminal_request)
         manager.register_script_message_handler("directoryListing")
         manager.connect("script-message-received::directoryListing", self.on_directory_request)
         manager.register_script_message_handler("fileOpen")
@@ -376,6 +381,27 @@ class DirGroupWindow(Gtk.ApplicationWindow):
             return False
         decision.ignore()
         return True
+
+    def on_terminal_request(self, _manager, result) -> None:
+        pane = token = None
+        try:
+            request = json.loads(result.get_js_value().to_json(0))
+            pane, token = request.get("paneId"), request.get("token")
+            if not isinstance(pane, str) or not pane.isdecimal() or not isinstance(token, str) or len(token) > 80:
+                return
+            action = request.get("action")
+            if action == "start":
+                self.terminals.start(pane, token, request.get("path"), request.get("cols"), request.get("rows"))
+            elif action == "input":
+                self.terminals.input(pane, token, request.get("data"))
+            elif action == "resize":
+                self.terminals.resize(pane, token, request.get("cols"), request.get("rows"))
+            elif action == "close":
+                session = self.terminals.sessions.get(pane)
+                if session and session["token"] == token:
+                    self.terminals.close(pane)
+        except (ValueError, TypeError, OSError, subprocess.SubprocessError) as error:
+            self.send_to_ui("receiveTerminal", {"paneId": pane, "token": token, "error": str(error)})
 
     def on_directory_request(self, _manager, result, reply=None) -> None:
         initial = False
@@ -955,7 +981,7 @@ class DirGroupWindow(Gtk.ApplicationWindow):
 
 class DirGroupApplication(Gtk.Application):
     def __init__(self) -> None:
-        super().__init__(application_id="local.dirgroup.webui")
+        super().__init__(application_id="local.dirgroup.xtermexperiment")
 
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)

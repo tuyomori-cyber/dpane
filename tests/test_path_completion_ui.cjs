@@ -20,7 +20,7 @@ class Element {
   }
   set innerHTML(value) {
     this.parts = {};
-    for (const name of ["path", "status", "entry-list", "up", "back", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle", "pane-title"]) {
+    for (const name of ["path", "status", "entry-list", "up", "back", "close-pane", "split-horizontal", "split-vertical", "entry-name", "toggle-times", "bookmark-toggle", "pane-title", "terminal-toggle"]) {
       if (value.includes(name)) { this.parts[name] = new Element(); this.parts[name].parent = this; }
     }
   }

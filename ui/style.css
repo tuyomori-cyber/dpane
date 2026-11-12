@@ -96,3 +96,8 @@ button:disabled:hover { background: #303746; border-color: #4b566a; }
 .help-page th, .help-page td { padding: 7px 9px; border-bottom: 1px solid #3e5066; text-align: left; }
 .help-page th { color: #cce6ff; background: #2b394c; }
 .help-page td:first-child { width: 40%; color: #8fc7ff; font-family: ui-monospace, monospace; white-space: nowrap; }
+
+/* Separate xterm + PTY experiment. */
+.pane.terminal-mode .entry-list { display: none; }
+.terminal-view { min-width: 0; min-height: 0; overflow: hidden; background: #000; }
+.terminal-view .xterm { height: 100%; padding: 2px; box-sizing: border-box; }

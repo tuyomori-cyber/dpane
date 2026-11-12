@@ -585,6 +585,7 @@
     }
     const next = firstPane(siblingOf(layout, closing));
     layout = removePane(layout, closing);
+    if (closing.terminal) stopTerminal(closing);
     panes.delete(closing.id);
     closing.entryResizeObserver?.disconnect();
     hideCompletion(closing);
@@ -860,6 +861,7 @@
       focusPane(activePane);
       return;
     }
+    if (event.target.closest(".terminal-view")) return;
     if (event.isComposing) return;
     if (event.target === activePane.searchInput) {
       if (matchesShortcut(event, "nextPane") || matchesShortcut(event, "previousPane")) {
@@ -930,6 +932,46 @@
     }
   }
 
+  function terminalMessage(pane, action, extra = {}) {
+    window.webkit.messageHandlers.terminal.postMessage({paneId: pane.id, token: pane.terminalToken, action, ...extra});
+  }
+  function stopTerminal(pane) {
+    if (!pane.terminal) return;
+    terminalMessage(pane, "close");
+    pane.terminalObserver?.disconnect();
+    pane.terminal.dispose();
+    pane.terminal = null;
+    pane.terminalView.remove();
+    pane.terminalView = null;
+    pane.element.classList.remove("terminal-mode");
+    pane.element.querySelector(".terminal-toggle").textContent = "端末";
+    pane.list.hidden = false;
+  }
+  function startTerminal(pane) {
+    pane.terminalToken = `${pane.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const container = document.createElement("div");
+    container.className = "terminal-view";
+    pane.terminalView = container;
+    pane.list.hidden = true;
+    pane.element.classList.add("terminal-mode");
+    pane.element.append(container);
+    const terminal = new Terminal({fontSize: 14, cursorBlink: true, scrollback: 1000});
+    const fit = new FitAddon.FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(container);
+    fit.fit();
+    pane.terminal = terminal;
+    pane.element.querySelector(".terminal-toggle").textContent = "一覧";
+    terminalMessage(pane, "start", {path: pane.path, cols: terminal.cols, rows: terminal.rows});
+    terminal.onData(data => terminalMessage(pane, "input", {data}));
+    terminal.onResize(size => terminalMessage(pane, "resize", size));
+    pane.terminalObserver = new ResizeObserver(() => {
+      if (pane.terminal === terminal && container.clientWidth && container.clientHeight) fit.fit();
+    });
+    pane.terminalObserver.observe(container);
+    terminal.focus();
+  }
+
   function makePane(path, selectInitial = true, load = true) {
     const id = String(nextPaneId++);
     const element = document.createElement("section");
@@ -943,6 +985,7 @@
         <button class="up" title="親フォルダへ">↑</button>
         <button class="bookmark-toggle" title="ブックマークに登録" aria-label="ブックマークに登録">☆</button>
         <input class="path" aria-label="フォルダのパス">
+        <button class="terminal-toggle" title="xterm.js実験">端末</button>
         <button class="split-horizontal" title="右にペインを追加 (${keybindings.splitRight})" aria-label="右にペインを追加">||</button>
         <button class="split-vertical" title="下にペインを追加 (${keybindings.splitDown})" aria-label="下にペインを追加">＝</button>
         <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
@@ -965,6 +1008,7 @@
     pane.timeButton = element.querySelector(".toggle-times");
     pane.timeButton.addEventListener("click", () => toggleModifiedTimes(pane));
     pane.list = element.querySelector(".entry-list");
+    element.querySelector(".terminal-toggle").addEventListener("click", () => pane.terminal ? stopTerminal(pane) : startTerminal(pane));
     setupBlankSelection(pane);
     pane.searchBox = document.createElement("div");
     pane.searchBox.className = "incremental-search";
@@ -1020,7 +1064,7 @@
     element.addEventListener("pointerdown", event => {
       setActivePane(pane);
       if (!pane.searchBox.contains(event.target)) closeIncrementalSearch(pane);
-      if (!event.target.closest(".path") && !pane.searchBox.contains(event.target)) focusPane(pane);
+      if (!event.target.closest(".path, .terminal-view") && !pane.searchBox.contains(event.target)) focusPane(pane);
     });
     element.addEventListener("focusin", () => setActivePane(pane));
     panes.set(pane.id, pane);
@@ -1057,6 +1101,19 @@
   }
 
   window.dirGroup = {
+    receiveTerminal(response) {
+      const pane = panes.get(response.paneId);
+      if (!pane || !pane.terminal || pane.terminalToken !== response.token) return;
+      if (response.data) {
+        const raw = atob(response.data);
+        const bytes = Uint8Array.from(raw, c => c.charCodeAt(0));
+        pane.terminal.write(bytes);
+      } else if (response.error) {
+        pane.terminal.write(`\r\n端末エラー: ${response.error}\r\n`);
+      } else if (response.exited) {
+        pane.terminal.write("\r\n[端末が終了しました。『一覧』で戻れます]\r\n");
+      }
+    },
     receiveDirectories(responses) {
       responses.forEach(response => window.dirGroup.receiveDirectory(response));
     },
