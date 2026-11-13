@@ -680,11 +680,15 @@
   }
 
   function moveActivePane(offset) {
-    clearMaximized();
     const visible = visiblePanes();
     if (!visible.length) return;
     const currentIndex = Math.max(0, visible.indexOf(activePane));
-    focusPane(visible[(currentIndex + offset + visible.length) % visible.length]);
+    const next = visible[(currentIndex + offset + visible.length) % visible.length];
+    if (maximizedPane && maximizedPane !== next) {
+      maximizedPane = next;
+      renderLayout();
+    }
+    focusPane(next);
   }
 
   function focusPaneByNumber(number) {
