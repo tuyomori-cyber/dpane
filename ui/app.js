@@ -84,6 +84,9 @@
   let nextPaneId = 1;
   let layout;
   let activePane;
+  let maximizedPane = null;
+  const minimizedPanes = [];
+  const paneBar = document.querySelector("#pane-bar");
   let paneDrag = null;
   const initialPaneIds = new Set(Array.from({ length: startupPaneCount }, (_value, index) => String(index + 1)));
   const pendingInitialListings = window.dpaneStartupTiming ? new Set(initialPaneIds) : null;
@@ -369,6 +372,7 @@
   }
 
   function focusPane(pane) {
+    if (!pane) return;
     setActivePane(pane);
     requestAnimationFrame(() => {
       if (activePane === pane && panes.has(pane.id)) pane.element.focus({ preventScroll: true });
@@ -377,6 +381,7 @@
 
   function visiblePanes() {
     function collect(node) {
+      if (!node) return [];
       return node.pane ? [node.pane] : [...collect(node.first), ...collect(node.second)];
     }
     return collect(layout);
@@ -461,18 +466,93 @@
       split.append(first, divider, second);
       return split;
     }
-    workspace.replaceChildren(render(layout));
-    visiblePanes().forEach((pane, index) => {
-      pane.element.querySelector(".pane-title").textContent = `Pane ${index + 1}`;
-    });
+    workspace.replaceChildren(...(layout ? [maximizedPane ? maximizedPane.element : render(layout)] : []));
     updateAddButtons();
+    panes.forEach(pane => {
+      const button = pane.element.querySelector(".maximize-pane");
+      button.textContent = pane === maximizedPane ? "❐" : "□";
+      button.title = pane === maximizedPane ? "最大化を解除" : "このペインを最大化";
+      button.setAttribute("aria-label", button.title);
+    });
+    renderPaneBar();
     requestAnimationFrame(() => visiblePanes().forEach(updateEntryColumnCount));
   }
 
+  function clearMaximized() {
+    if (!maximizedPane) return;
+    maximizedPane = null;
+    renderLayout();
+  }
+
+  function toggleMaximized(pane) {
+    hideCompletion(pane);
+    maximizedPane = maximizedPane === pane ? null : pane;
+    renderLayout();
+    focusPane(pane);
+  }
+
+  function renderPaneBar() {
+    const displayed = visiblePanes();
+    const buttons = [...panes.values()].map(pane => {
+      if (!pane.barButton) {
+        pane.barButton = document.createElement("button");
+        pane.barButton.type = "button";
+        pane.barButton.addEventListener("click", () => {
+          if (minimizedPanes.includes(pane)) restorePane(pane);
+          else toggleMaximized(pane);
+        });
+      }
+      const minimized = minimizedPanes.includes(pane);
+      const maximized = pane === maximizedPane;
+      const state = minimized ? "最小化中" : maximized ? "最大化中" : "表示中";
+      pane.barButton.className = minimized ? "pane-bar-minimized" : maximized ? "pane-bar-maximized" : "pane-bar-visible";
+      const name = pane.path.split("/").filter(Boolean).pop() || "/";
+      const index = displayed.indexOf(pane);
+      const label = index < 0 ? name : `${index + 1}: ${name}`;
+      pane.barButton.textContent = label;
+      const title = pane.element.querySelector(".pane-title");
+      title.textContent = label;
+      title.title = pane.path;
+      pane.barButton.title = pane.path;
+      pane.barButton.setAttribute("aria-label", `${pane.barButton.textContent}、${state}、${pane.path}`);
+      return pane.barButton;
+    });
+    const current = Array.from(paneBar.children);
+    if (current.length !== buttons.length || buttons.some((button, index) => current[index] !== button)) {
+      paneBar.replaceChildren(...buttons);
+    }
+  }
+
+  function minimizePane(pane) {
+    if (!visiblePanes().includes(pane)) return;
+    clearMaximized();
+    const sibling = siblingOf(layout, pane);
+    const next = sibling ? firstPane(sibling) : null;
+    hideCompletion(pane);
+    closeIncrementalSearch(pane);
+    layout = removePane(layout, pane);
+    minimizedPanes.push(pane);
+    setActivePane(next);
+    renderLayout();
+    if (next) focusPane(next);
+    else paneBar.querySelector("button")?.focus();
+  }
+
+  function restorePane(pane) {
+    const index = minimizedPanes.indexOf(pane);
+    if (index < 0) return;
+    clearMaximized();
+    minimizedPanes.splice(index, 1);
+    layout = layout ? replacePane(layout, activePane, splitNode({ pane: activePane }, { pane }, "horizontal")) : { pane };
+    renderLayout();
+    focusPane(pane);
+  }
+
   function addPane(direction, source = activePane, path = source?.path, load = true) {
-    if (!source || !panes.has(source.id) || panes.size >= MAX_PANES) return;
+    if (panes.size >= MAX_PANES || (layout && (!source || !visiblePanes().includes(source)))) return;
+    clearMaximized();
     const pane = makePane(path, false, load);
-    layout = replacePane(layout, source, splitNode({ pane: source }, { pane }, direction));
+    layout = layout ? replacePane(layout, source, splitNode({ pane: source }, { pane }, direction)) : { pane };
     renderLayout();
     focusPane(pane);
     return pane;
@@ -500,8 +580,10 @@
   }
 
   function openBookmark(path, pane, newPane = false) {
-    if (!pane || !panes.has(pane.id)) return;
-    if (newPane && panes.size >= MAX_PANES) return;
+    if (!layout) newPane = true;
+    if (layout && (!pane || !visiblePanes().includes(pane))) return;
+    if (maximizedPane && pane && pane !== maximizedPane) clearMaximized();
+    if (newPane && panes.size >= MAX_PANES) { window.alert("ペインは最大8個です。最小化中のペインも含まれます。"); return; }
     closeBookmarks();
     let requestId;
     if (!newPane) {
@@ -509,7 +591,7 @@
       pane.pendingDirectory = { id: requestId, historyAction: "navigate" };
       pane.backButton.disabled = true;
     }
-    window.webkit.messageHandlers.bookmarks.postMessage({ action: "open", path, paneId: pane.id, newPane, requestId });
+    window.webkit.messageHandlers.bookmarks.postMessage({ action: "open", path, paneId: pane?.id, newPane, requestId });
   }
 
   function showBookmarkContext(event, path) {
@@ -529,12 +611,12 @@
     send.className = "bookmark-send";
     const sendButton = document.createElement("button");
     sendButton.textContent = "送る ▶";
-    sendButton.disabled = !panes.size;
+    sendButton.disabled = !visiblePanes().length;
     const submenu = document.createElement("div");
     submenu.className = "bookmark-submenu";
     visiblePanes().forEach((pane, index) => {
       const item = document.createElement("button");
-      item.textContent = `Pane ${index + 1}`;
+      item.textContent = `Pane ${index + 1}へ送る`;
       item.addEventListener("click", () => openBookmark(path, pane));
       submenu.append(item);
     });
@@ -583,17 +665,22 @@
       window.webkit.messageHandlers.closeWindow.postMessage({});
       return;
     }
-    const next = firstPane(siblingOf(layout, closing));
+    clearMaximized();
+    const sibling = siblingOf(layout, closing);
+    const next = sibling ? firstPane(sibling) : null;
     layout = removePane(layout, closing);
     panes.delete(closing.id);
     closing.entryResizeObserver?.disconnect();
     hideCompletion(closing);
     closing.completion.list.remove();
+    if (!next) setActivePane(null);
     renderLayout();
-    focusPane(next);
+    if (next) focusPane(next);
+    else paneBar.querySelector("button")?.focus();
   }
 
   function moveActivePane(offset) {
+    clearMaximized();
     const visible = visiblePanes();
     if (!visible.length) return;
     const currentIndex = Math.max(0, visible.indexOf(activePane));
@@ -601,6 +688,7 @@
   }
 
   function focusPaneByNumber(number) {
+    clearMaximized();
     const pane = visiblePanes()[number - 1];
     if (pane) focusPane(pane);
   }
@@ -840,12 +928,15 @@
   }
 
   function handlePaneKeydown(event) {
-    if (!activePane) return;
     if (!shortcutPage.hidden) {
       if (!event.isComposing && (event.key === "Escape" || matchesShortcut(event, "showShortcuts"))) {
         event.preventDefault();
         closeShortcuts();
       }
+      return;
+    }
+    if (!activePane) {
+      if (!event.isComposing && matchesShortcut(event, "showShortcuts")) { event.preventDefault(); openShortcuts(); }
       return;
     }
     if (event.key === "Escape" && viewMenu.open && viewMenu.contains(event.target)) {
@@ -945,6 +1036,8 @@
         <input class="path" aria-label="フォルダのパス">
         <button class="split-horizontal" title="右にペインを追加 (${keybindings.splitRight})" aria-label="右にペインを追加">||</button>
         <button class="split-vertical" title="下にペインを追加 (${keybindings.splitDown})" aria-label="下にペインを追加">＝</button>
+        <button class="minimize-pane" title="このペインを最小化" aria-label="このペインを最小化">−</button>
+        <button class="maximize-pane" title="このペインを最大化" aria-label="このペインを最大化">□</button>
         <button class="close-pane" title="このペインを閉じる" aria-label="このペインを閉じる">×</button>
         </div><div class="status-row"><p class="status">準備中…</p>
         <button class="toggle-times" aria-pressed="false" title="更新日時の表示切替 (${keybindings.toggleTimes})">Update times</button>
@@ -1005,6 +1098,8 @@
     const go = () => { hideCompletion(pane); pane.submittingPath = pane.input.value; requestDirectory(pane, pane.input.value.trim()); };
     element.querySelector(".split-horizontal").addEventListener("click", () => addPane("horizontal", pane));
     element.querySelector(".split-vertical").addEventListener("click", () => addPane("vertical", pane));
+    element.querySelector(".minimize-pane").addEventListener("click", () => minimizePane(pane));
+    element.querySelector(".maximize-pane").addEventListener("click", () => toggleMaximized(pane));
     element.querySelector(".close-pane").addEventListener("click", () => closePane(pane));
     pane.input.addEventListener("pointerdown", event => {
       if (event.button !== 0 || document.activeElement === pane.input) return;
@@ -1087,6 +1182,7 @@
         else pane.history.push(pane.path);
       }
       pane.path = response.path;
+      renderPaneBar();
       pane.hasLocation = true;
       pane.backButton.disabled = !pane.history.length;
       updateBookmarkButtons();
