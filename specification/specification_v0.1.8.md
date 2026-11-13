@@ -1,7 +1,7 @@
-# Dpaie 仕様書 v0.1.8
+# Dpane 仕様書 v0.1.8
 
 - 作成日: 2026-11-04
-- 正式表示名: Dpaie。リポジトリ・起動コマンド名: `dpane`。旧称: `dir-group-webUI`。
+- 正式表示名: Dpane。リポジトリ・起動コマンド名: `dpane`。旧称: `dir-group-webUI`。
 - [v0.1.7](specification_v0.1.7.md) を継承し、パス入力欄のフォルダ補完を追加する。
 
 ## パス補完

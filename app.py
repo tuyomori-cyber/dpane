@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dpaie: a local multi-pane file browser."""
+"""Dpane: a local multi-pane file browser."""
 
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ def selected_entries(value: object) -> list[tuple[Path, tuple[int, int, int]]]:
 
 class DirGroupWindow(Gtk.ApplicationWindow):
     def __init__(self, application: Gtk.Application) -> None:
-        super().__init__(application=application, title="Dpaie")
+        super().__init__(application=application, title="Dpane")
         self.ui_file = startup_ui_file()
         self.startup_reply = (STARTUP_TIMING.enabled and not STARTUP_TIMING.summary and self.ui_file == UI_FILE
                               and os.environ.get("DPANE_STARTUP_REPLY") == "1")
@@ -975,14 +975,14 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="dpane-inline-") as directory:
             _inline_ui_file = create_inline_ui(Path(directory))
             try:
-                GLib.set_application_name("Dpaie")
+                GLib.set_application_name("Dpane")
                 return DirGroupApplication().run(sys.argv)
             finally:
                 _inline_ui_file = None
     ui_file = startup_ui_file()
     if not ui_file.is_file():
         sys.exit(f"UI file is missing: {ui_file}")
-    GLib.set_application_name("Dpaie")
+    GLib.set_application_name("Dpane")
     return DirGroupApplication().run(sys.argv)
 
 
