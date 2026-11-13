@@ -83,7 +83,7 @@ cd dpane
 
 ## 開発情報
 
-- [現行仕様書 v0.1.24](specification/specification_v0.1.24.md)
+- [現行仕様書 v0.2.0](specification/specification_v0.2.0.md)
 - [TODO](todo.md)・[作業報告](report/webUI-report.md)
 - [ファイル操作の安全性テスト](tests/file_operation_safety/実機テスト仕様書.md)
 - [起動時間の計測手順](specification/起動時間計測手順.md)
